@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ic.fullname" . }}-backend
+  labels: {{- include "ic.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels: {{- include "ic.labels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+    spec:
+      serviceAccountName: {{ include "ic.serviceAccountName" . }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          ports:
+            - containerPort: 8081
+              name: http
+          env:
+            - { name: IC_MODE, value: {{ .Values.backend.mode | quote }} }
+            - { name: IC_HUBBLE_RELAY_ADDR, value: {{ .Values.backend.hubbleRelayAddr | quote }} }
+            - { name: IC_TETRAGON_ADDR, value: {{ .Values.backend.tetragonAddr | quote }} }
+            - { name: IC_CLUSTER_NAME, value: {{ .Values.backend.clusterName | quote }} }
+            - { name: IC_CORS_ORIGIN, value: {{ .Values.backend.corsOrigin | quote }} }
+            {{- if .Values.backend.oidc.issuer }}
+            - { name: IC_OIDC_ISSUER, value: {{ .Values.backend.oidc.issuer | quote }} }
+            - { name: IC_OIDC_CLIENT_ID, value: {{ .Values.backend.oidc.clientID | quote }} }
+            - { name: IC_OIDC_ROLES_CLAIM, value: {{ .Values.backend.oidc.rolesClaim | quote }} }
+            {{- end }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532          # distroless "nonroot" (numeric)
+            runAsGroup: 65532
+            capabilities: { drop: [ALL] }
+          resources: {{- toYaml .Values.backend.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ic.fullname" . }}-backend
+  labels: {{- include "ic.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: backend
+  ports:
+    - port: {{ .Values.service.backendPort }}
+      targetPort: http
+      name: http

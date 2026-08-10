@@ -1,0 +1,37 @@
+# Source: https://github.com/gccloudone-aurora/tetragon-policies (MIT)
+# Copyright (c) His Majesty the King in Right of Canada.
+# Adapted for isovalent-control: added category label + action annotation so the
+# Runtime Policies screen can group it and toggle Monitor/Kill.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: lsm-bprm-check
+  labels:
+    isovalent-control.io/category: exec
+  annotations:
+    isovalent-control.io/action: monitor
+    isovalent-control.io/description: "BPF-LSM hook on bprm_check_security \u2014 can block execution.\
+      \ REQUIRES a kernel with BPF LSM enabled."
+    isovalent-control.io/source: gccloudone-aurora/tetragon-policies (MIT)
+spec:
+  lsmhooks:
+  - hook: bprm_check_security
+    args:
+    - index: 0
+      type: linux_binprm
+    selectors:
+    - matchBinaries:
+      - operator: In
+        values:
+        - /usr/bin/zsh
+        - /usr/bin/bash
+      matchArgs:
+      - index: 0
+        operator: Postfix
+        values:
+        - contrib/tester-progs/nop
+      matchActions:
+      - action: Override
+        argError: -1
+      - action: Post
+        imaHash: true

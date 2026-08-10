@@ -1,0 +1,57 @@
+# Default values for isovalent-control.
+backend:
+  image:
+    repository: ghcr.io/isovalent-control/backend
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  replicas: 1
+  # mock = demo data, live = real cluster integrations
+  mode: live
+  hubbleRelayAddr: hubble-relay.kube-system.svc.cluster.local:80
+  tetragonAddr: tetragon.kube-system.svc.cluster.local:54321
+  clusterName: default
+  corsOrigin: "*"
+  oidc:
+    # Leave issuer empty to run without authentication (dev only!).
+    issuer: ""
+    clientID: ""
+    rolesClaim: groups
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+frontend:
+  image:
+    repository: ghcr.io/isovalent-control/frontend
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicas: 1
+  # Browser-facing URL of the backend API (ingress host or port-forward).
+  apiUrl: ""
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+service:
+  type: ClusterIP
+  backendPort: 8081
+  frontendPort: 3000
+
+ingress:
+  enabled: false
+  className: ""
+  host: isovalent-control.local
+  tls: []
+  annotations: {}
+
+rbac:
+  # Creates a ServiceAccount + ClusterRole limited to the policy CRDs the
+  # backend manages. Disable to bring your own.
+  create: true
+
+serviceAccount:
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile: { type: RuntimeDefault }

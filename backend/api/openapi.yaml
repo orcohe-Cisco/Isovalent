@@ -1,0 +1,134 @@
+openapi: 3.0.3
+info:
+  title: Isovalent-Control API
+  version: 0.1.0
+  description: >
+    Unified management API for Cilium, Hubble and Tetragon.
+    All /api/v1 endpoints require a Bearer JWT unless the server runs with
+    authentication disabled (dev mode). WebSocket endpoints accept the token
+    via the `access_token` query parameter.
+servers:
+  - url: http://localhost:8081
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      summary: Liveness probe
+      responses:
+        "200":
+          description: OK
+  /api/v1/me:
+    get:
+      summary: Authenticated identity and RBAC scopes
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Identity" }
+          description: OK
+  /api/v1/overview:
+    get:
+      summary: Dashboard summary (golden signals, totals, recent alerts)
+      responses:
+        "200": { description: OK }
+  /api/v1/servicemap:
+    get:
+      summary: Aggregated service dependency graph
+      responses:
+        "200": { description: OK }
+  /api/v1/flows/recent:
+    get:
+      summary: Recent Hubble flows
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, maximum: 1000 } }
+      responses:
+        "200": { description: OK }
+  /api/v1/events/recent:
+    get:
+      summary: Recent Tetragon events
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, maximum: 1000 } }
+      responses:
+        "200": { description: OK }
+  /api/v1/alerts/recent:
+    get:
+      summary: Recent alerts (network drops + runtime enforcement)
+      responses:
+        "200": { description: OK }
+  /api/v1/policies/{kind}:
+    get:
+      summary: List policies
+      description: >
+        `kind` is `network` (CiliumNetworkPolicy + CiliumClusterwideNetworkPolicy),
+        `tracing` (TracingPolicy + TracingPolicyNamespaced), or an explicit CRD
+        kind name. Results are filtered to namespaces the caller can read.
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string } }
+        - { name: namespace, in: query, schema: { type: string } }
+      responses:
+        "200": { description: OK }
+  /api/v1/policies/{kind}/{namespace}/{name}:
+    parameters:
+      - { name: kind, in: path, required: true, schema: { type: string } }
+      - name: namespace
+        in: path
+        required: true
+        description: Use `-` for cluster-scoped policies.
+        schema: { type: string }
+      - { name: name, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get one policy (full manifest)
+      responses:
+        "200": { description: OK }
+        "404": { description: Not found }
+    put:
+      summary: Server-side apply (create or update)
+      description: Body is the full manifest as JSON. Requires editor role for
+        the namespace; admin for cluster-scoped kinds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Applied }
+        "403": { description: RBAC denied }
+        "422": { description: Manifest/kind/name mismatch }
+    delete:
+      summary: Delete a policy
+      responses:
+        "204": { description: Deleted }
+  /ws/flows:
+    get:
+      summary: "WebSocket: live normalized Hubble flows (JSON per message)"
+      responses: { "101": { description: Switching Protocols } }
+  /ws/events:
+    get:
+      summary: "WebSocket: live normalized Tetragon events"
+      responses: { "101": { description: Switching Protocols } }
+  /ws/alerts:
+    get:
+      summary: "WebSocket: live alerts"
+      responses: { "101": { description: Switching Protocols } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    Identity:
+      type: object
+      properties:
+        subject: { type: string }
+        email: { type: string }
+        name: { type: string }
+        dev: { type: boolean }
+        roles:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string, enum: [viewer, editor, admin] }
+              namespaces:
+                type: array
+                items: { type: string }

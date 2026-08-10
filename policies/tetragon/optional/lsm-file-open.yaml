@@ -1,0 +1,31 @@
+# Source: https://github.com/gccloudone-aurora/tetragon-policies (MIT)
+# Copyright (c) His Majesty the King in Right of Canada.
+# Adapted for isovalent-control: added category label + action annotation so the
+# Runtime Policies screen can group it and toggle Monitor/Kill.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: lsm-file-open
+  labels:
+    isovalent-control.io/category: file
+  annotations:
+    isovalent-control.io/action: monitor
+    isovalent-control.io/description: BPF-LSM hook on file_open. REQUIRES a kernel with BPF LSM enabled.
+    isovalent-control.io/source: gccloudone-aurora/tetragon-policies (MIT)
+spec:
+  lsmhooks:
+  - hook: file_open
+    args:
+    - index: 0
+      type: file
+    selectors:
+    - matchBinaries:
+      - operator: In
+        values:
+        - /usr/bin/cat
+      matchArgs:
+      - index: 0
+        operator: Equal
+        values:
+        - /etc/passwd
+        - /etc/shadow

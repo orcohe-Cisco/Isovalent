@@ -1,0 +1,36 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: file-integrity
+  labels:
+    isovalent-control.io/category: file
+  annotations:
+    isovalent-control.io/action: monitor
+    isovalent-control.io/description: >-
+      Watches access to sensitive credential files (/etc/shadow, /etc/sudoers,
+      /etc/passwd, SSH host/user keys). Post = alert only; Sigkill = block.
+spec:
+  kprobes:
+    - call: "security_file_permission"
+      syscall: false
+      return: true
+      args:
+        - index: 0
+          type: "file"
+        - index: 1
+          type: "int"
+      returnArg:
+        index: 0
+        type: "int"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Prefix"
+              values:
+                - "/etc/shadow"
+                - "/etc/sudoers"
+                - "/etc/passwd"
+                - "/root/.ssh"
+                - "/etc/ssh"
+          matchActions:
+            - action: Post   # flip to Sigkill to enforce

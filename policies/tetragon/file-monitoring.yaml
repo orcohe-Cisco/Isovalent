@@ -1,0 +1,76 @@
+# Source: https://github.com/gccloudone-aurora/tetragon-policies (MIT)
+# Copyright (c) His Majesty the King in Right of Canada.
+# Adapted for isovalent-control: added category label + action annotation so the
+# Runtime Policies screen can group it and toggle Monitor/Kill.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: file-monitoring
+  labels:
+    isovalent-control.io/category: file
+  annotations:
+    isovalent-control.io/action: monitor
+    isovalent-control.io/description: Monitors reads/writes/truncates of sensitive paths (/etc, /boot,
+      credentials, container runtime sockets) with noise filters.
+    isovalent-control.io/source: gccloudone-aurora/tetragon-policies (MIT)
+spec:
+  kprobes:
+  - call: security_file_permission
+    syscall: false
+    return: true
+    args:
+    - index: 0
+      type: file
+    - index: 1
+      type: int
+    returnArg:
+      index: 0
+      type: int
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: Equal
+        values:
+        - /etc/passwd
+      - index: 1
+        operator: Equal
+        values:
+        - '2'
+  - call: security_mmap_file
+    syscall: false
+    return: true
+    args:
+    - index: 0
+      type: file
+    - index: 1
+      type: uint32
+    - index: 2
+      type: nop
+    returnArg:
+      index: 0
+      type: int
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: Equal
+        values:
+        - /etc/passwd
+      - index: 1
+        operator: Mask
+        values:
+        - '2'
+  - call: security_path_truncate
+    syscall: false
+    return: true
+    args:
+    - index: 0
+      type: path
+    returnArg:
+      index: 0
+      type: int
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: Equal
+        values:
+        - /etc/passwd

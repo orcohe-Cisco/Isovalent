@@ -1,0 +1,26 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: block-cloud-metadata
+  labels:
+    isovalent-control.io/category: egress
+  annotations:
+    isovalent-control.io/action: monitor
+    isovalent-control.io/description: >-
+      Detects connections to the cloud metadata endpoint 169.254.169.254,
+      a common SSRF target for stealing instance credentials.
+spec:
+  kprobes:
+    - call: "tcp_connect"
+      syscall: false
+      args:
+        - index: 0
+          type: "sock"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "DAddr"
+              values:
+                - "169.254.169.254"
+          matchActions:
+            - action: Post   # flip to Sigkill to enforce

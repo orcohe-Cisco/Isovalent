@@ -1,0 +1,170 @@
+# isovalent-control — self-contained deploy (MOCK mode by default).
+# Apply with envsubst so ${IC_IMAGE_PREFIX} is substituted:
+#
+#   export IC_IMAGE_PREFIX=            # empty for kind/minikube (locally loaded)
+#   # or: export IC_IMAGE_PREFIX=youracr.azurecr.io/   for AKS + ACR
+#   envsubst < isovalent-control.yaml | kubectl apply -f -
+#
+# Access (no ingress needed) — ONE forward, on ANY local port:
+#   kubectl -n isovalent-control port-forward svc/isovalent-control-frontend 3000:3000 &
+#   open http://localhost:3000
+# The frontend container proxies /api and /ws to the backend Service, so the
+# browser never needs a route to the backend and no port is baked in.
+# Or just run ./connect.sh, which picks a free port and verifies everything.
+#
+# Switch to LIVE mode: see live-mode.md (one kubectl set env + RBAC already here).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: isovalent-control
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: isovalent-control-backend
+  namespace: isovalent-control
+---
+# RBAC is scoped to exactly the policy CRDs the app manages. Harmless in mock
+# mode (unused); already correct for the live-mode switch.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: isovalent-control-policies
+rules:
+  - apiGroups: ["cilium.io"]
+    resources:
+      - ciliumnetworkpolicies
+      - ciliumclusterwidenetworkpolicies
+      - tracingpolicies
+      - tracingpoliciesnamespaced
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: isovalent-control-policies
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: isovalent-control-policies
+subjects:
+  - kind: ServiceAccount
+    name: isovalent-control-backend
+    namespace: isovalent-control
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: isovalent-control-backend
+  namespace: isovalent-control
+  labels: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: backend }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: backend }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: backend }
+    spec:
+      serviceAccountName: isovalent-control-backend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532          # distroless "nonroot" — numeric so runAsNonRoot can verify
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: backend
+          image: "${IC_IMAGE_PREFIX}isovalent-control-backend:${IC_IMAGE_TAG}"
+          imagePullPolicy: Always
+          ports: [{ containerPort: 8081, name: http }]
+          env:
+            - { name: IC_MODE,         value: "mock" }
+            - { name: IC_LISTEN_ADDR,  value: ":8081" }
+            - { name: IC_CLUSTER_NAME, value: "k8s-goat" }
+            - { name: IC_CORS_ORIGIN,  value: "*" }
+            - { name: IC_RETENTION_DAYS, value: "14" }
+            # Embedded UIs. These are the localhost port-forward URLs the
+            # installer opens; override for an ingress deployment.
+            - { name: IC_HUBBLE_UI_URL, value: "http://localhost:12000" }
+            - { name: IC_GRAFANA_URL,   value: "http://localhost:3001" }
+          livenessProbe:  { httpGet: { path: /healthz, port: http } }
+          readinessProbe: { httpGet: { path: /healthz, port: http } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: isovalent-control-backend
+  namespace: isovalent-control
+  # A ServiceMonitor selects SERVICES by label, not pods. Without these the
+  # scrape config matches nothing and every isovalent_control_* panel in Grafana
+  # reads "No data" while the backend is happily serving /metrics.
+  labels:
+    app.kubernetes.io/name: isovalent-control
+    app.kubernetes.io/component: backend
+    isovalent-control.io/scrape: "true"
+spec:
+  selector: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: backend }
+  ports: [{ port: 8081, targetPort: http, name: http }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: isovalent-control-frontend
+  namespace: isovalent-control
+  labels: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: frontend }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: frontend }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: frontend }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000           # alpine "node" — numeric so runAsNonRoot can verify
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: frontend
+          image: "${IC_IMAGE_PREFIX}isovalent-control-frontend:${IC_IMAGE_TAG}"
+          imagePullPolicy: Always
+          ports: [{ containerPort: 3000, name: http }]
+          env:
+            # Next.js standalone binds to $HOSTNAME (which K8s sets to the pod
+            # name); force all-interfaces so port-forward / Service reach it.
+            - { name: HOSTNAME, value: "0.0.0.0" }
+            # The container's proxy forwards /api, /ws and /healthz here, so the
+            # browser only ever talks to the origin that served the page. That
+            # is why any local port-forward port works.
+            - { name: IC_BACKEND_URL, value: "http://isovalent-control-backend:8081" }
+          # Probes hit the proxy's own endpoint, not the backend — a backend
+          # outage must not get the frontend restarted.
+          livenessProbe:  { httpGet: { path: /_ic/healthz, port: http } }
+          readinessProbe: { httpGet: { path: /_ic/healthz, port: http } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: isovalent-control-frontend
+  namespace: isovalent-control
+  labels:
+    app.kubernetes.io/name: isovalent-control
+    app.kubernetes.io/component: frontend
+spec:
+  selector: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: frontend }
+  ports: [{ port: 3000, targetPort: http, name: http }]

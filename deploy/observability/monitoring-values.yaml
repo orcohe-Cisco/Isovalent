@@ -1,0 +1,68 @@
+# kube-prometheus-stack values used by install.sh / rebuild-aks.sh.
+# Provisions the official community Grafana dashboards for Cilium and Hubble
+# (downloaded by gnetId at startup) alongside the sidecar-loaded
+# "Isovalent Control" dashboard, and allows embedding so the app can iframe it.
+grafana:
+  # Let isovalent-control embed Grafana panels/dashboards in an iframe.
+  grafana.ini:
+    security:
+      allow_embedding: true
+    auth.anonymous:
+      enabled: true          # read-only viewing without a login prompt in the embed
+      org_role: Viewer
+    dashboards:
+      # Make "Isovalent Control" the home dashboard for every user, including
+      # the anonymous viewer the embed uses — so opening Grafana lands here
+      # instead of on the generic welcome page. The path is where the sidecar
+      # writes ConfigMap-provisioned dashboards.
+      default_home_dashboard_path: /tmp/dashboards/isovalent-control.json
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL     # picks up our ConfigMap-provisioned dashboard
+      label: grafana_dashboard
+      # Pinned explicitly: default_home_dashboard_path above points here, and a
+      # chart default that drifts would silently break the home dashboard.
+      folder: /tmp/dashboards
+  # Official community dashboards, fetched from grafana.com by ID at startup.
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: cilium-community
+          orgId: 1
+          folder: "Cilium / Hubble / Tetragon"
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/cilium-community
+  dashboards:
+    cilium-community:
+      cilium-metrics:
+        gnetId: 16611          # Cilium Metrics (official)
+        revision: 1
+        datasource: Prometheus
+      cilium-operator:
+        gnetId: 16612          # Cilium Operator (official)
+        revision: 1
+        datasource: Prometheus
+      hubble-metrics:
+        gnetId: 16613          # Hubble (official)
+        revision: 1
+        datasource: Prometheus
+      tetragon-metrics:
+        gnetId: 21182          # Tetragon (community)
+        revision: 1
+        datasource: Prometheus
+      kubernetes-cluster:
+        gnetId: 315            # Kubernetes cluster monitoring (classic)
+        revision: 3
+        datasource: Prometheus
+
+prometheus:
+  prometheusSpec:
+    # Scrape every ServiceMonitor (incl. our isovalent-control one), not just
+    # those with the chart's release label.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false

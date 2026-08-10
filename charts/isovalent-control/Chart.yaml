@@ -1,0 +1,12 @@
+apiVersion: v2
+name: isovalent-control
+description: >-
+  Unified open-source GUI for Cilium, Hubble and Tetragon — observability,
+  policy building and runtime-security monitoring.
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+keywords: [cilium, hubble, tetragon, ebpf, security, observability]
+home: https://github.com/isovalent-control/isovalent-control
+sources:
+  - https://github.com/isovalent-control/isovalent-control

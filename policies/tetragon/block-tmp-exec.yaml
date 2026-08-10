@@ -1,0 +1,28 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: block-tmp-exec
+  labels:
+    isovalent-control.io/category: exec
+  annotations:
+    isovalent-control.io/action: monitor
+    isovalent-control.io/description: >-
+      Detects execution of binaries from world-writable scratch dirs
+      (/tmp, /dev/shm, /var/tmp) — the classic dropper / fileless-malware path.
+spec:
+  kprobes:
+    - call: "security_bprm_creds_from_file"
+      syscall: false
+      args:
+        - index: 0
+          type: "file"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Prefix"
+              values:
+                - "/tmp/"
+                - "/dev/shm/"
+                - "/var/tmp/"
+          matchActions:
+            - action: Post   # flip to Sigkill to enforce

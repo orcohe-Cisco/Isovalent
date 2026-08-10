@@ -1,0 +1,49 @@
+# Source: https://github.com/gccloudone-aurora/tetragon-policies (MIT)
+# Copyright (c) His Majesty the King in Right of Canada.
+# Adapted for isovalent-control: added category label + action annotation so the
+# Runtime Policies screen can group it and toggle Monitor/Kill.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: process-creds-changed
+  labels:
+    isovalent-control.io/category: privilege
+  annotations:
+    isovalent-control.io/action: monitor
+    isovalent-control.io/description: "Detects in-kernel credential changes (commit_creds / override_creds\
+      \ / revert_creds) \u2014 post-exploitation privilege change."
+    isovalent-control.io/source: gccloudone-aurora/tetragon-policies (MIT)
+spec:
+  kprobes:
+  - call: commit_creds
+    syscall: false
+    args:
+    - index: 0
+      type: cred
+    selectors:
+    - matchNamespaces:
+      - namespace: Pid
+        operator: NotIn
+        values:
+        - host_ns
+      matchActions:
+      - action: Post
+        rateLimit: 1m
+  - call: override_creds
+    syscall: false
+    args:
+    - index: 0
+      type: cred
+    selectors:
+    - matchActions:
+      - action: Post
+        rateLimit: 1m
+  - call: revert_creds
+    syscall: false
+    args:
+    - index: 0
+      type: cred
+    selectors:
+    - matchActions:
+      - action: Post
+        rateLimit: 1m

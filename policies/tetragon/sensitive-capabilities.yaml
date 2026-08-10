@@ -1,0 +1,23 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: sensitive-capabilities
+  labels:
+    isovalent-control.io/category: capability
+  annotations:
+    isovalent-control.io/action: monitor
+    isovalent-control.io/description: >-
+      Detects loading of kernel modules (init_module / finit_module) — requires
+      CAP_SYS_MODULE and is a strong indicator of container escape / rootkit.
+spec:
+  kprobes:
+    - call: "security_kernel_read_file"
+      syscall: false
+      args:
+        - index: 0
+          type: "file"
+        - index: 1
+          type: "int"
+      selectors:
+        - matchActions:
+            - action: Post   # flip to Sigkill to enforce

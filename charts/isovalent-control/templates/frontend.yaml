@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ic.fullname" . }}-frontend
+  labels: {{- include "ic.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels: {{- include "ic.labels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: frontend
+          image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            # Next.js standalone binds to $HOSTNAME (K8s sets it to the pod name);
+            # force all-interfaces so the Service / port-forward can reach it.
+            - { name: HOSTNAME, value: "0.0.0.0" }
+            {{- if .Values.frontend.apiUrl }}
+            - { name: NEXT_PUBLIC_API_URL, value: {{ .Values.frontend.apiUrl | quote }} }
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000           # alpine "node" (numeric)
+            runAsGroup: 1000
+            capabilities: { drop: [ALL] }
+          resources: {{- toYaml .Values.frontend.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ic.fullname" . }}-frontend
+  labels: {{- include "ic.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: frontend
+  ports:
+    - port: {{ .Values.service.frontendPort }}
+      targetPort: http
+      name: http

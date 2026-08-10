@@ -1,0 +1,26 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: privilege-escalation
+  labels:
+    isovalent-control.io/category: privilege
+  annotations:
+    isovalent-control.io/action: monitor
+    isovalent-control.io/description: >-
+      Detects a process changing its UID to root (0) via setuid — a common
+      privilege-escalation step after a container compromise.
+spec:
+  kprobes:
+    - call: "__sys_setuid"
+      syscall: true
+      args:
+        - index: 0
+          type: "int"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Equal"
+              values:
+                - "0"
+          matchActions:
+            - action: Post   # flip to Sigkill to enforce
