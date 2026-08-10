@@ -1,0 +1,42 @@
+# ============================================================================
+# Reusable building block: allow DNS to kube-dns WITH L7 DNS visibility.
+# ----------------------------------------------------------------------------
+# Any toFQDNs policy REQUIRES a companion rule that lets the pod talk to
+# kube-dns on port 53 AND enables the DNS proxy (rules.dns). Without the L7
+# `rules.dns` block, Cilium cannot learn which IPs an FQDN resolves to and your
+# toFQDNs allowlist will silently fail.
+#
+# This template: DNS is observed (so Hubble shows every lookup), egress to the
+# open internet is limited to an explicit FQDN allowlist, everything else drops.
+# Swap the endpointSelector + matchPattern list per workload.
+# ============================================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-dns-allowlist
+  namespace: default
+spec:
+  endpointSelector:
+    matchLabels:
+      app: build-code          # <-- change per workload
+  egress:
+    # 1) Allow + proxy DNS so FQDN rules work and every lookup is visible.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    # 2) Allow egress ONLY to these resolved names (tighten as needed).
+    - toFQDNs:
+        - matchName: "api.internal.example.com"
+        - matchPattern: "*.githubusercontent.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

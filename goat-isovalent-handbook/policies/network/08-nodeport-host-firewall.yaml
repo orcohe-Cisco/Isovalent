@@ -1,0 +1,46 @@
+# ============================================================================
+# Scenario 8 - NodePort exposed services (host-level exposure 30000-32767)
+# ----------------------------------------------------------------------------
+# BLOCK: NodePort punches the service through every node's external IP with no
+# firewall. Cilium's HOST firewall (CiliumClusterwideNetworkPolicy targeting the
+# reserved:host identity) filters traffic to the node itself. This example drops
+# world traffic to the NodePort range while keeping health/API ports open.
+#
+# Requires host firewall enabled:  helm ... --set hostFirewall.enabled=true
+#
+# IDENTIFY: external hits on NodePorts show as DROPPED to reserved:host in
+# `hubble observe --to-identity host`.
+# ============================================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: host-firewall-nodeport
+spec:
+  description: "Drop world traffic to NodePort range on nodes"
+  nodeSelector:
+    matchLabels:
+      # applies to all nodes; narrow with a label if desired
+      kubernetes.io/os: linux
+  ingress:
+    # Explicitly allow what the node genuinely needs from the world / cluster.
+    - fromEntities:
+        - cluster
+        - health
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "6443"      # kube-apiserver
+              protocol: TCP
+            - port: "22"        # SSH (tighten to a bastion CIDR in prod)
+              protocol: TCP
+  # Anything else from the world to the host (incl. 30000-32767) is denied,
+  # because once an ingress rule exists the host defaults to deny.
+  ingressDeny:
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "30000"
+              endPort: 32767
+              protocol: TCP

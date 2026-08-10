@@ -1,0 +1,39 @@
+# ============================================================================
+# Scenario 7 - Attacking the private registry (poor-registry, Registry API v2)
+# ----------------------------------------------------------------------------
+# BLOCK: Only pods that legitimately pull images (here: the goat home app) may
+# reach the registry. L7 HTTP filtering additionally allows normal pull verbs
+# but denies the enumeration endpoint /v2/_catalog that the attacker uses to
+# list every repo.
+#
+# IDENTIFY: catalog scraping shows as GET /v2/_catalog 403 in
+# `hubble observe --type l7 --to-label app=poor-registry`.
+# ============================================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: poor-registry-restrict
+  namespace: default
+spec:
+  endpointSelector:
+    matchLabels:
+      app: poor-registry
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: kubernetes-goat-home
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+          rules:
+            http:
+              # Allow manifest/blob pulls, deny catalog + tag enumeration.
+              - method: "GET"
+                path: "/v2/"
+              - method: "GET"
+                path: "/v2/.+/manifests/.+"
+              - method: "GET"
+                path: "/v2/.+/blobs/.+"
+              - method: "HEAD"
+                path: "/v2/.+/(manifests|blobs)/.+"

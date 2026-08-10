@@ -1,0 +1,33 @@
+# ============================================================================
+# Scenario 2 - DIND exploitation (command injection -> containerd.sock -> crictl)
+# ----------------------------------------------------------------------------
+# IDENTIFY + BLOCK at runtime with Tetragon.
+#   * Detect any process open()ing the mounted container runtime socket.
+#   * Sigkill the process the moment it touches the socket path.
+# This stops the attacker's `crictl -r unix:///custom/containerd/containerd.sock`
+# even though the socket is (mis)mounted into the pod.
+#
+# Observe first with:  kubectl exec -n kube-system ds/tetragon -c tetragon -- \
+#                      tetra getevents -o compact --pods health-check
+# ============================================================================
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: block-container-socket-access
+spec:
+  kprobes:
+    - call: "security_file_open"
+      syscall: false
+      args:
+        - index: 0
+          type: "file"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Prefix"
+              values:
+                - "/custom/containerd/containerd.sock"
+                - "/var/run/docker.sock"
+                - "/run/containerd/containerd.sock"
+          matchActions:
+            - action: Sigkill

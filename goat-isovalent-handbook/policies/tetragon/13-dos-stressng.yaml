@@ -1,0 +1,30 @@
+# ============================================================================
+# Scenario 13 - DoS of Memory/CPU (stress-ng in a limitless pod)
+# ----------------------------------------------------------------------------
+# The real fix is resource requests/limits + LimitRange (admission — see the
+# scenario doc). Tetragon is the runtime catch: kill stress-ng / stress the
+# instant it execs so a limitless pod can't starve the node.
+#
+# BLOCK: Sigkill on the stress binary at the LSM bprm_check_security hook.
+# PREREQUISITE: BPF-LSM enabled (see policies/tetragon/10-cryptominer-exec.yaml).
+# IDENTIFY: process_exec event names the pod and the exact command line.
+# ============================================================================
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: block-stress-tools
+spec:
+  lsmhooks:
+    - hook: "bprm_check_security"
+      args:
+        - index: 0
+          type: "linux_binprm"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Postfix"
+              values:
+                - "/stress-ng"
+                - "/stress"
+          matchActions:
+            - action: Sigkill
