@@ -3,6 +3,7 @@ kind: TracingPolicy
 metadata:
   name: file-integrity
   labels:
+    app.kubernetes.io/managed-by: isovalent-control
     isovalent-control.io/category: file
   annotations:
     isovalent-control.io/action: monitor

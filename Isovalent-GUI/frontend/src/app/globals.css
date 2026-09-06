@@ -2,40 +2,289 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ==========================================================================
+   Design tokens
+   Dark-first. Surfaces are layered rather than outlined: each step up in
+   elevation gets slightly lighter, and separation comes from a hairline that
+   is barely there plus a soft shadow. Series colours are the validated
+   dataviz slots and are left untouched so existing charts keep their meaning.
+   ========================================================================== */
+
 :root {
   color-scheme: dark;
-  /* Dark-mode surfaces + validated series slots (dataviz reference palette) */
-  --surface-0: #111110;
-  --surface-1: #1a1a19;
-  --surface-2: #232322;
-  --text-primary: #ffffff;
-  --text-secondary: #c3c2b7;
+
+  --surface-0: #0e0e0d; /* app background */
+  --surface-1: #171716; /* panels */
+  --surface-2: #1f1f1e; /* raised rows, inputs */
+  --surface-3: #292928; /* hover, popovers */
+
+  --hairline: rgba(255, 255, 255, 0.07);
+  --hairline-strong: rgba(255, 255, 255, 0.12);
+
+  --text-primary: #f5f5f3;
+  --text-secondary: #a8a79e;
+  --text-tertiary: #6f6e68;
+
+  --accent: #3987e5;
+  --accent-soft: rgba(57, 135, 229, 0.14);
+
   --series-1: #3987e5; /* blue   */
   --series-2: #d95926; /* orange */
   --series-3: #199e70; /* aqua   */
   --series-8: #e66767; /* red    */
+
+  /* Motion. The long-tail ease is what makes a transition read as "settling"
+     rather than "stopping"; it is the same shape UIKit uses for sheets. */
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 140ms;
+  --dur: 240ms;
+  --dur-slow: 420ms;
+
+  --radius: 12px;
+  --radius-lg: 16px;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.6);
+  --shadow-3: 0 24px 64px -16px rgba(0, 0, 0, 0.75);
 }
 
-body {
-  background: var(--surface-0);
-  color: var(--text-primary);
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter",
+      "Segoe UI", Roboto, system-ui, sans-serif;
+    /* Tabular figures everywhere numbers sit in a column. */
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  body {
+    background: var(--surface-0);
+    color: var(--text-primary);
+    letter-spacing: -0.006em;
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.018em;
+  }
+
+  /* One consistent focus treatment, keyboard only. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+  }
 }
 
-.panel {
-  @apply rounded-lg border border-neutral-800 bg-[color:var(--surface-1)];
+@layer components {
+  .panel {
+    @apply rounded-xl border bg-[color:var(--surface-1)];
+    border-color: var(--hairline);
+    box-shadow: var(--shadow-1);
+  }
+
+  /* Interactive card: lifts a hair on hover, presses in on click. */
+  .card-interactive {
+    @apply rounded-xl border bg-[color:var(--surface-1)];
+    border-color: var(--hairline);
+    transition:
+      border-color var(--dur) var(--ease-out),
+      background-color var(--dur) var(--ease-out),
+      transform var(--dur) var(--ease-out),
+      box-shadow var(--dur) var(--ease-out);
+  }
+  .card-interactive:hover {
+    border-color: var(--hairline-strong);
+    background-color: var(--surface-2);
+    box-shadow: var(--shadow-2);
+  }
+  .card-interactive:active {
+    transform: scale(0.995);
+  }
+  .card-selected {
+    border-color: rgba(57, 135, 229, 0.55);
+    background-color: var(--surface-2);
+    box-shadow:
+      var(--shadow-2),
+      inset 0 0 0 1px rgba(57, 135, 229, 0.25);
+  }
+
+  .hairline-b {
+    border-bottom: 1px solid var(--hairline);
+  }
+  .hairline-t {
+    border-top: 1px solid var(--hairline);
+  }
+  .hairline-r {
+    border-right: 1px solid var(--hairline);
+  }
+
+  .field {
+    @apply w-full rounded-lg px-3 py-2 text-sm;
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    color: var(--text-primary);
+    transition:
+      border-color var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .field::placeholder {
+    color: var(--text-tertiary);
+  }
+  .field:focus {
+    outline: none;
+    border-color: rgba(57, 135, 229, 0.6);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium;
+    transition:
+      background-color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out),
+      opacity var(--dur-fast) var(--ease-out);
+    border: 1px solid transparent;
+  }
+  .btn:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: #4a94ea;
+  }
+
+  .btn-secondary {
+    background: var(--surface-2);
+    border-color: var(--hairline);
+    color: var(--text-primary);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--surface-3);
+    border-color: var(--hairline-strong);
+  }
+
+  .btn-ghost {
+    color: var(--text-secondary);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--surface-2);
+    color: var(--text-primary);
+  }
+
+  .btn-danger {
+    background: rgba(230, 103, 103, 0.14);
+    border-color: rgba(230, 103, 103, 0.35);
+    color: #f2a6a6;
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: rgba(230, 103, 103, 0.22);
+  }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-feature-settings: normal;
+  }
+
+  .section-label {
+    @apply text-[11px] font-medium uppercase tracking-[0.08em];
+    color: var(--text-tertiary);
+  }
 }
 
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+/* ------------------------------------------------------------------ motion */
+
+@keyframes ic-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
+
+@keyframes ic-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ic-slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.animate-fade-up {
+  animation: ic-fade-up var(--dur) var(--ease-out) both;
+}
+.animate-fade {
+  animation: ic-fade var(--dur) var(--ease-out) both;
+}
+.animate-slide-in {
+  animation: ic-slide-in var(--dur-slow) var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* --------------------------------------------------------------- chrome */
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: content-box;
 }
 
 /* React Flow dark theme adjustments */

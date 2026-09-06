@@ -1,0 +1,21 @@
+# build output
+bin/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+
+# tooling
+__pycache__/
+*.pyc
+.DS_Store
+
+# local overrides
+.env
+.env.local
+*.local.yaml
+
+# transfer artefacts
+*.tgz
+*.zip
+_to_delete/

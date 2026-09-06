@@ -1,201 +1,303 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut } from "@/lib/api";
-import { useStream } from "@/lib/useStream";
-import type { Alert, AlertRoute, HistoryRecord } from "@/lib/types";
-import { Badge } from "@/components/StatCard";
+import { useConfig, type SinkSpec } from "@/lib/config";
+import type { AlertRoute } from "@/lib/types";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { ErrorNote } from "@/components/ui/ErrorNote";
+import { Chip } from "@/components/ui/Chip";
 
-const TYPES: AlertRoute["type"][] = ["slack", "webhook", "pagerduty", "splunk"];
+const KINDS = [
+  { id: "network_drop", label: "Network drops" },
+  { id: "runtime_enforcement", label: "Runtime enforcement" },
+  { id: "http_error", label: "HTTP errors" },
+];
 
-function verdictTone(v?: string): "crit" | "warn" | "ok" | "muted" {
-  if (v === "killed" || v === "blocked") return "crit";
-  if (v === "monitored") return "warn";
-  return "muted";
-}
-
-/* ------------------------------- events tab ------------------------------- */
-function EventsTab() {
-  const [history, setHistory] = useState<Alert[]>([]);
-  const [mins, setMins] = useState(60);
-  const [cat, setCat] = useState<string>("all");
-  const [verdict, setVerdict] = useState<string>("all");
-  const { items: live } = useStream<Alert>("/ws/alerts", 200);
-
-  useEffect(() => {
-    const since = new Date(Date.now() - mins * 60_000).toISOString();
-    apiGet<HistoryRecord[]>(`/api/v1/history/alert?since=${encodeURIComponent(since)}&limit=1000`)
-      .then((recs) => setHistory(recs.map((r) => r.payload as Alert)))
-      .catch(() => {});
-  }, [mins]);
-
-  const all = useMemo(() => {
-    const seen = new Set<string>();
-    const merged: Alert[] = [];
-    for (const a of [...live, ...history]) {
-      const k = a.time + a.title;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      merged.push(a);
-    }
-    return merged
-      .filter((a) => cat === "all" || a.category === cat)
-      .filter((a) => verdict === "all" || a.verdict === verdict)
-      .sort((x, y) => (x.time < y.time ? 1 : -1));
-  }, [live, history, cat, verdict]);
-
-  const counts = useMemo(() => {
-    const c = { blocked: 0, killed: 0, monitored: 0 };
-    for (const a of all) if (a.verdict && a.verdict in c) c[a.verdict as keyof typeof c]++;
-    return c;
-  }, [all]);
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <Badge tone="crit">{counts.blocked} blocked (Cilium)</Badge>
-        <Badge tone="crit">{counts.killed} killed (Tetragon)</Badge>
-        <Badge tone="warn">{counts.monitored} monitored (Tetragon)</Badge>
-        <div className="ml-auto flex items-center gap-2 text-sm">
-          <select value={cat} onChange={(e) => setCat(e.target.value)} className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5">
-            <option value="all">all engines</option>
-            <option value="network">network (Cilium)</option>
-            <option value="runtime">runtime (Tetragon)</option>
-          </select>
-          <select value={verdict} onChange={(e) => setVerdict(e.target.value)} className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5">
-            <option value="all">all verdicts</option>
-            <option value="blocked">blocked</option>
-            <option value="killed">killed</option>
-            <option value="monitored">monitored</option>
-          </select>
-          <select value={mins} onChange={(e) => setMins(Number(e.target.value))} className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5">
-            <option value={15}>15m</option>
-            <option value={60}>1h</option>
-            <option value={360}>6h</option>
-            <option value={1440}>24h</option>
-            <option value={20160}>14 days</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="panel overflow-x-auto">
-        <table className="w-full text-left text-xs">
-          <thead className="border-b border-neutral-800 text-neutral-400">
-            <tr>
-              <th className="px-3 py-2 font-medium">time</th>
-              <th className="px-3 py-2 font-medium">verdict</th>
-              <th className="px-3 py-2 font-medium">engine</th>
-              <th className="px-3 py-2 font-medium">workload</th>
-              <th className="px-3 py-2 font-medium">rule / policy</th>
-              <th className="px-3 py-2 font-medium">event</th>
-            </tr>
-          </thead>
-          <tbody className="mono divide-y divide-neutral-800/60">
-            {all.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-8 text-center text-neutral-500">no enforcement events in range</td></tr>
-            )}
-            {all.slice(0, 500).map((a, i) => (
-              <tr key={i} className={a.verdict === "killed" || a.verdict === "blocked" ? "bg-red-950/20" : undefined}>
-                <td className="whitespace-nowrap px-3 py-1.5 text-neutral-500">{new Date(a.time).toLocaleTimeString()}</td>
-                <td className="px-3 py-1.5"><Badge tone={verdictTone(a.verdict)}>{a.verdict ?? a.kind}</Badge></td>
-                <td className="px-3 py-1.5 text-neutral-400">{a.engine}</td>
-                <td className="px-3 py-1.5">{a.namespace ? `${a.namespace}/${a.workload}` : a.workload}</td>
-                <td className="max-w-xs truncate px-3 py-1.5">
-                  {a.policy && <span className="text-series-blue">{a.policy}</span>}
-                  {a.policy && a.rule && " · "}
-                  {a.rule && <span className="text-neutral-400">{a.rule}</span>}
-                </td>
-                <td className="max-w-md truncate px-3 py-1.5 text-neutral-400">{a.event || a.detail}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------ routing tab ------------------------------- */
-function emptyRoute(): AlertRoute {
-  return { id: `r${Math.floor(Date.now() % 1e6)}`, name: "New route", type: "slack", url: "", minSeverity: "warning", enabled: true };
-}
-
-function RoutingTab() {
-  const [routes, setRoutes] = useState<AlertRoute[]>([]);
-  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [testing, setTesting] = useState<string | null>(null);
-
-  useEffect(() => {
-    apiGet<AlertRoute[]>("/api/v1/alerts/routes").then(setRoutes).catch((e) => setStatus({ ok: false, msg: String(e) }));
-  }, []);
-  const update = (i: number, patch: Partial<AlertRoute>) => setRoutes((p) => p.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-  const save = async () => {
-    try { setRoutes(await apiPut<AlertRoute[]>("/api/v1/alerts/routes", routes)); setStatus({ ok: true, msg: "Saved" }); }
-    catch (e) { setStatus({ ok: false, msg: String(e) }); }
+function emptyRoute(type: string): AlertRoute {
+  return {
+    id: `r${Date.now().toString(36)}`,
+    name: "New route",
+    type: type as AlertRoute["type"],
+    url: "",
+    minSeverity: "warning",
+    enabled: true,
   };
+}
+
+/**
+ * Alert routing.
+ *
+ * Each destination has different words for the same three fields, so the form
+ * is driven by the backend's sink catalogue rather than a switch statement
+ * here: "token" is a routing key for PagerDuty, a bot token for Webex and an
+ * HEC token for Splunk, and labelling all three "token" is how integrations
+ * end up misconfigured.
+ */
+export default function AlertsPage() {
+  const { config } = useConfig();
+  const [routes, setRoutes] = useState<AlertRoute[]>([]);
+  const [specs, setSpecs] = useState<SinkSpec[]>([]);
+  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    apiGet<AlertRoute[]>("/api/v1/alerts/routes")
+      .then(setRoutes)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    apiGet<SinkSpec[]>("/api/v1/alerts/sinks")
+      .then(setSpecs)
+      .catch(() => setSpecs(config.alertSinks));
+  }, [config.alertSinks]);
+
+  const specFor = useCallback(
+    (type: string) => specs.find((s) => s.type === type),
+    [specs],
+  );
+
+  const update = (i: number, patch: Partial<AlertRoute>) => {
+    setDirty(true);
+    setRoutes((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  };
+
+  const save = async () => {
+    try {
+      setRoutes(await apiPut<AlertRoute[]>("/api/v1/alerts/routes", routes));
+      setStatus({ ok: true, msg: "Routing saved" });
+      setDirty(false);
+    } catch (e) {
+      setStatus({ ok: false, msg: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
   const test = async (r: AlertRoute) => {
     setTesting(r.id);
-    try { await apiPost("/api/v1/alerts/routes/test", r); setStatus({ ok: true, msg: `Delivered to ${r.name}` }); }
-    catch (e) { setStatus({ ok: false, msg: `Test failed: ${String(e)}` }); }
-    finally { setTesting(null); }
+    setStatus(null);
+    try {
+      await apiPost("/api/v1/alerts/routes/test", r);
+      setStatus({ ok: true, msg: `Test alert delivered to ${r.name}` });
+    } catch (e) {
+      setStatus({ ok: false, msg: `Delivery failed: ${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      setTesting(null);
+    }
   };
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-neutral-400">Forward enforcement events to Slack, PagerDuty, webhooks, or a Splunk/SIEM HEC. Deduplicated per kind+title in a 60s window.</p>
-        <button onClick={() => setRoutes((r) => [...r, emptyRoute()])} className="rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800">＋ Add route</button>
-      </div>
-      {status && <div className={`rounded px-3 py-2 text-xs ${status.ok ? "bg-emerald-950 text-emerald-300" : "bg-red-950 text-red-300"}`}>{status.msg}</div>}
-      {routes.map((r, i) => (
-        <div key={r.id} className="panel space-y-3 p-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <input value={r.name} onChange={(e) => update(i, { name: e.target.value })} className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm font-medium" />
-            <select value={r.type} onChange={(e) => update(i, { type: e.target.value as AlertRoute["type"] })} className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm">
-              {TYPES.map((t) => <option key={t}>{t}</option>)}
+    <>
+      <PageHeader
+        title="Integrations"
+        subtitle="Where security events go. Alerts are deduplicated per kind and title within a 60-second window before delivery, so one noisy policy cannot page you 400 times."
+        actions={
+          <>
+            <select
+              className="field !w-auto !py-1.5 !text-[12px]"
+              value=""
+              onChange={(e) => {
+                if (!e.target.value) return;
+                setRoutes((r) => [...r, emptyRoute(e.target.value)]);
+                setDirty(true);
+              }}
+            >
+              <option value="">＋ Add destination…</option>
+              {specs.map((s) => (
+                <option key={s.type} value={s.type}>
+                  {s.label}
+                </option>
+              ))}
             </select>
-            <select value={r.minSeverity} onChange={(e) => update(i, { minSeverity: e.target.value as "warning" | "critical" })} className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm">
-              <option value="warning">≥ warning</option>
-              <option value="critical">critical only</option>
-            </select>
-            <label className="flex cursor-pointer items-center gap-1.5 text-xs text-neutral-300"><input type="checkbox" checked={r.enabled} onChange={(e) => update(i, { enabled: e.target.checked })} />enabled</label>
-            <div className="ml-auto flex gap-2">
-              <button onClick={() => test(r)} disabled={testing === r.id || !r.url} className="rounded border border-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-800 disabled:opacity-40">{testing === r.id ? "…" : "Test"}</button>
-              <button onClick={() => setRoutes((p) => p.filter((_, idx) => idx !== i))} className="rounded border border-red-900 bg-red-950 px-3 py-1.5 text-xs text-red-300 hover:bg-red-900/50">Remove</button>
-            </div>
-          </div>
-          <input value={r.url} placeholder="destination URL" onChange={(e) => update(i, { url: e.target.value })} className="mono w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-xs" />
-          {(r.type === "pagerduty" || r.type === "splunk") && (
-            <input value={r.token ?? ""} placeholder={r.type === "pagerduty" ? "Routing key" : "HEC token"} onChange={(e) => update(i, { token: e.target.value })} className="mono w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-xs" />
-          )}
-        </div>
-      ))}
-      {routes.length > 0 && <button onClick={save} className="rounded bg-series-blue px-4 py-2 text-sm font-medium text-white hover:brightness-110">Save configuration</button>}
-    </div>
-  );
-}
+            <button className="btn btn-primary" onClick={save} disabled={!dirty}>
+              Save
+            </button>
+          </>
+        }
+      />
 
-export default function AlertsPage() {
-  const [tab, setTab] = useState<"events" | "routing">("events");
-  return (
-    <div className="space-y-4">
-      <header>
-        <h1 className="text-lg font-semibold">Security Events &amp; Alerting</h1>
-        <p className="text-sm text-neutral-400">
-          Everything blocked by Cilium or killed/monitored by Tetragon — with the
-          rule that matched and the related event. Retained for the configured
-          window (14 days by default; Postgres for durable storage).
-        </p>
-      </header>
-      <div className="flex gap-1 border-b border-neutral-800">
-        {(["events", "routing"] as const).map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm ${tab === t ? "border-b-2 border-series-blue text-white" : "text-neutral-400 hover:text-neutral-200"}`}>
-            {t === "events" ? "Enforcement Log" : "Alert Routing"}
-          </button>
-        ))}
-      </div>
-      {tab === "events" ? <EventsTab /> : <RoutingTab />}
-    </div>
+      <ErrorNote error={error} />
+
+      {status && (
+        <div
+          className="mb-4 rounded-lg px-3.5 py-2.5 text-[13px]"
+          style={
+            status.ok
+              ? { background: "rgba(25,158,112,0.12)", color: "#6dd3ab" }
+              : { background: "rgba(230,103,103,0.12)", color: "#f0a3a3" }
+          }
+        >
+          {status.msg}
+        </div>
+      )}
+
+      {routes.length === 0 ? (
+        <EmptyState
+          title="No destinations configured"
+          body={
+            <p>
+              Add one above. Slack and Teams take an incoming-webhook URL and nothing else; syslog
+              and the SIEM sinks take a collector address and a format.
+            </p>
+          }
+        />
+      ) : (
+        <div className="space-y-3">
+          {routes.map((r, i) => {
+            const spec = specFor(r.type);
+            return (
+              <section key={r.id} className="panel p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={r.name}
+                    onChange={(e) => update(i, { name: e.target.value })}
+                    className="field !w-44 !py-1.5 font-medium"
+                  />
+                  <select
+                    value={r.type}
+                    onChange={(e) => update(i, { type: e.target.value as AlertRoute["type"] })}
+                    className="field !w-auto !py-1.5 !text-[12px]"
+                  >
+                    {specs.map((s) => (
+                      <option key={s.type} value={s.type}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={r.minSeverity}
+                    onChange={(e) => update(i, { minSeverity: e.target.value as "warning" | "critical" })}
+                    className="field !w-auto !py-1.5 !text-[12px]"
+                  >
+                    <option value="warning">warning and above</option>
+                    <option value="critical">critical only</option>
+                  </select>
+                  <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[color:var(--text-secondary)]">
+                    <input
+                      type="checkbox"
+                      checked={r.enabled}
+                      onChange={(e) => update(i, { enabled: e.target.checked })}
+                    />
+                    enabled
+                  </label>
+                  <div className="ml-auto flex gap-2">
+                    <button
+                      className="btn btn-secondary !py-1.5 !text-[12px]"
+                      onClick={() => void test(r)}
+                      disabled={testing === r.id || !r.url}
+                    >
+                      {testing === r.id ? "Sending…" : "Send test"}
+                    </button>
+                    <button
+                      className="btn btn-danger !py-1.5 !text-[12px]"
+                      onClick={() => {
+                        setRoutes((prev) => prev.filter((_, idx) => idx !== i));
+                        setDirty(true);
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+
+                {spec?.notes && (
+                  <p className="mt-2 text-[11.5px] leading-relaxed text-[color:var(--text-tertiary)]">
+                    {spec.notes}
+                  </p>
+                )}
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <label className="text-[11px] text-[color:var(--text-tertiary)]">
+                    {spec?.urlLabel ?? "URL"}
+                    <input
+                      value={r.url}
+                      placeholder={spec?.urlHint}
+                      onChange={(e) => update(i, { url: e.target.value })}
+                      className="field mono mt-1 !py-1.5 !text-[12px]"
+                    />
+                  </label>
+                  {spec?.tokenLabel && (
+                    <label className="text-[11px] text-[color:var(--text-tertiary)]">
+                      {spec.tokenLabel}
+                      <input
+                        value={r.token ?? ""}
+                        type="password"
+                        onChange={(e) => update(i, { token: e.target.value })}
+                        className="field mono mt-1 !py-1.5 !text-[12px]"
+                      />
+                    </label>
+                  )}
+                  {spec?.targetLabel && (
+                    <label className="text-[11px] text-[color:var(--text-tertiary)]">
+                      {spec.targetLabel}
+                      <input
+                        value={r.target ?? ""}
+                        placeholder={spec.targetHint}
+                        onChange={(e) => update(i, { target: e.target.value })}
+                        className="field mono mt-1 !py-1.5 !text-[12px]"
+                      />
+                    </label>
+                  )}
+                  {spec?.formatOptions?.length ? (
+                    <label className="text-[11px] text-[color:var(--text-tertiary)]">
+                      Format
+                      <select
+                        value={r.format ?? spec.formatOptions[0]}
+                        onChange={(e) => update(i, { format: e.target.value })}
+                        className="field mt-1 !py-1.5 !text-[12px]"
+                      >
+                        {spec.formatOptions.map((f) => (
+                          <option key={f} value={f}>
+                            {f === "cef" ? "CEF (ArcSight, QRadar, most SIEMs)" : "RFC5424 syslog"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="section-label">Only send</span>
+                  {KINDS.map((k) => {
+                    const on = (r.kinds ?? []).includes(k.id);
+                    return (
+                      <button
+                        key={k.id}
+                        onClick={() => {
+                          const cur = r.kinds ?? [];
+                          update(i, {
+                            kinds: on ? cur.filter((x) => x !== k.id) : [...cur, k.id],
+                          });
+                        }}
+                      >
+                        <Chip tone={on ? "accent" : "neutral"}>{k.label}</Chip>
+                      </button>
+                    );
+                  })}
+                  {(r.kinds ?? []).length === 0 && (
+                    <span className="text-[11px] text-[color:var(--text-tertiary)]">
+                      everything
+                    </span>
+                  )}
+                  <input
+                    value={(r.namespaces ?? []).join(",")}
+                    placeholder="namespace filter, comma separated (optional)"
+                    onChange={(e) =>
+                      update(i, {
+                        namespaces: e.target.value
+                          .split(",")
+                          .map((s) => s.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                    className="field mono ml-auto !w-72 !py-1 !text-[11px]"
+                  />
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </>
   );
 }

@@ -1,0 +1,37 @@
+# ============================================================================
+# Scenario 1 - Sensitive keys in codebases (exposed .git over HTTP)
+# ----------------------------------------------------------------------------
+# BLOCK: The build-code web app leaks its .git directory. An L7 HTTP policy lets
+# the app serve its real endpoints but returns 403 for any request whose path
+# touches /.git. Cilium enforces this in the Envoy L7 proxy, so the attacker's
+# git-dumper crawl is denied at the request level (not just the connection).
+#
+# IDENTIFY: Every blocked request appears in `hubble observe --type l7
+# --http-status 403` and in the Hubble UI service map as denied HTTP verdicts.
+# ============================================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: build-code-block-git
+  namespace: default
+spec:
+  endpointSelector:
+    matchLabels:
+      app: build-code
+  ingress:
+    - fromEndpoints:
+        - {}                       # from any in-cluster client (tighten as needed)
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+          rules:
+            http:
+              # Allow-list the legitimate paths; the implicit default is deny,
+              # so /.git/config, /.git/HEAD etc. never match and are rejected.
+              - method: "GET"
+                path: "/"
+              - method: "GET"
+                path: "/(index|health|static/.*)"
+              - method: "POST"
+                path: "/api/.*"

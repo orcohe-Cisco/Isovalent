@@ -140,6 +140,33 @@ type Verifier struct {
 	fetched time.Time
 }
 
+// TokenResolver resolves a static/API bearer token to an identity. It is
+// consulted before OIDC verification, so a machine client can authenticate
+// with an issued key while humans use SSO.
+type TokenResolver interface {
+	Resolve(token string) (*Identity, bool)
+}
+
+// Middleware builds the authentication middleware.
+//
+// Order matters: API tokens are checked first (they are cheap and cannot be
+// confused with a JWT), then OIDC. With no issuer configured the server runs
+// in dev mode and injects a synthetic admin — which is why the server logs a
+// loud warning in that case.
+func Middleware(v *Verifier, tokens TokenResolver) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if raw := bearerToken(r); raw != "" && tokens != nil {
+				if id, ok := tokens.Resolve(raw); ok {
+					next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, id)))
+					return
+				}
+			}
+			v.Middleware(next).ServeHTTP(w, r)
+		})
+	}
+}
+
 // Middleware returns an authentication middleware. A nil receiver (auth
 // disabled) injects the dev admin identity.
 func (v *Verifier) Middleware(next http.Handler) http.Handler {

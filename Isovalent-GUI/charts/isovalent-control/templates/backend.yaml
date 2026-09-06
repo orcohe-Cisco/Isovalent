@@ -25,11 +25,30 @@ spec:
             - containerPort: 8081
               name: http
           env:
-            - { name: IC_MODE, value: {{ .Values.backend.mode | quote }} }
             - { name: IC_HUBBLE_RELAY_ADDR, value: {{ .Values.backend.hubbleRelayAddr | quote }} }
             - { name: IC_TETRAGON_ADDR, value: {{ .Values.backend.tetragonAddr | quote }} }
+            - { name: IC_HUBBLE_UI_URL, value: {{ .Values.backend.hubbleUiUrl | quote }} }
+            - { name: IC_GRAFANA_URL, value: {{ .Values.backend.grafanaUrl | quote }} }
+            - { name: IC_GRAFANA_DASHBOARD_UID, value: {{ .Values.backend.grafanaDashboardUid | quote }} }
             - { name: IC_CLUSTER_NAME, value: {{ .Values.backend.clusterName | quote }} }
             - { name: IC_CORS_ORIGIN, value: {{ .Values.backend.corsOrigin | quote }} }
+            - { name: IC_SELF_NAMESPACE, value: {{ .Release.Namespace | quote }} }
+            - { name: IC_PROTECTED_NAMESPACES, value: {{ .Values.backend.protectedNamespaces | quote }} }
+            {{- if .Values.backend.dbDsn }}
+            - { name: IC_DB_DSN, value: {{ .Values.backend.dbDsn | quote }} }
+            {{- end }}
+            {{- if ne .Values.backend.ai.provider "disabled" }}
+            - { name: IC_AI_PROVIDER, value: {{ .Values.backend.ai.provider | quote }} }
+            {{- if .Values.backend.ai.baseUrl }}
+            - { name: IC_AI_BASE_URL, value: {{ .Values.backend.ai.baseUrl | quote }} }
+            {{- end }}
+            {{- if .Values.backend.ai.model }}
+            - { name: IC_AI_MODEL, value: {{ .Values.backend.ai.model | quote }} }
+            {{- end }}
+            {{- if .Values.backend.ai.existingSecret }}
+            - { name: IC_AI_API_KEY_FILE, value: "/etc/ic/ai/api-key" }
+            {{- end }}
+            {{- end }}
             {{- if .Values.backend.oidc.issuer }}
             - { name: IC_OIDC_ISSUER, value: {{ .Values.backend.oidc.issuer | quote }} }
             - { name: IC_OIDC_CLIENT_ID, value: {{ .Values.backend.oidc.clientID | quote }} }
@@ -47,6 +66,17 @@ spec:
             runAsGroup: 65532
             capabilities: { drop: [ALL] }
           resources: {{- toYaml .Values.backend.resources | nindent 12 }}
+          {{- if and (ne .Values.backend.ai.provider "disabled") .Values.backend.ai.existingSecret }}
+          volumeMounts:
+            - { name: ai-key, mountPath: /etc/ic/ai, readOnly: true }
+          {{- end }}
+      {{- if and (ne .Values.backend.ai.provider "disabled") .Values.backend.ai.existingSecret }}
+      volumes:
+        - name: ai-key
+          secret:
+            secretName: {{ .Values.backend.ai.existingSecret | quote }}
+            items: [{ key: api-key, path: api-key }]
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

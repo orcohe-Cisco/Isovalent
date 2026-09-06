@@ -50,7 +50,7 @@ func DescribeTracingPolicy(kind Kind, manifest json.RawMessage) TracingPolicyInf
 		Kind:      kind,
 		Category:  m.Metadata.Labels[categoryLabel],
 		Managed:   m.Metadata.Labels["app.kubernetes.io/managed-by"] == "isovalent-control",
-		Action:    detectAction(manifest),
+		Action:    DetectAction(manifest),
 	}
 	if m.Metadata.Annotations != nil {
 		info.Description = m.Metadata.Annotations["isovalent-control.io/description"]
@@ -78,8 +78,8 @@ func extractHooks(spec map[string]any) []string {
 	return hooks
 }
 
-// detectAction reports enforce if any matchActions action is Sigkill/Override.
-func detectAction(manifest json.RawMessage) TracingAction {
+// DetectAction reports enforce if any matchActions action is Sigkill/Override.
+func DetectAction(manifest json.RawMessage) TracingAction {
 	s := string(manifest)
 	if strings.Contains(s, "\"Sigkill\"") || strings.Contains(s, "\"Override\"") {
 		return ActionEnforce

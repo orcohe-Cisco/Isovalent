@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/isovalent-control/isovalent-control/backend/internal/alerts"
+	"github.com/isovalent-control/isovalent-control/backend/internal/audit"
 	"github.com/isovalent-control/isovalent-control/backend/internal/auth"
 	"github.com/isovalent-control/isovalent-control/backend/internal/k8s"
 	"github.com/isovalent-control/isovalent-control/backend/internal/policy"
@@ -92,16 +93,28 @@ func (s *Server) setTracingAction(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Never let a policy that reaches into a protected namespace (this
+	// console's own pods, kube-system, etc.) go live — enforce is the one
+	// action here with no undo, so this check runs before either apply path.
+	if err := s.guard.CheckManifest(mutated); err != nil {
+		s.record(req, "policy.action", string(kind)+" "+ns+"/"+name, audit.OutcomeDenied, err.Error(), cur.Manifest, nil)
+		writeErr(w, http.StatusForbidden, err)
+		return
+	}
+
 	// GitOps PR mode instead of live apply when requested + configured.
 	if req.URL.Query().Get("mode") == "pr" {
 		s.applyViaPR(w, req, kind, name, mutated, "set "+name+" to "+reqBody.Action)
+		s.record(req, "policy.action", string(kind)+" "+ns+"/"+name, audit.OutcomeSuccess, "opened a pull request to set action="+reqBody.Action, cur.Manifest, mutated)
 		return
 	}
 	applied, err := s.policies.Apply(req.Context(), kind, ns, name, mutated)
 	if err != nil {
+		s.record(req, "policy.action", string(kind)+" "+ns+"/"+name, audit.OutcomeError, err.Error(), cur.Manifest, mutated)
 		writeErr(w, statusOf(err), err)
 		return
 	}
+	s.record(req, "policy.action", string(kind)+" "+ns+"/"+name, audit.OutcomeSuccess, "set action="+reqBody.Action, cur.Manifest, applied.Manifest)
 	writeJSON(w, http.StatusOK, k8s.DescribeTracingPolicy(kind, applied.Manifest))
 }
 

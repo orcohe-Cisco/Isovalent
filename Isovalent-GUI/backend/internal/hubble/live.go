@@ -89,6 +89,11 @@ func convertFlow(f *flowpb.Flow) Flow {
 	if t := f.GetTime(); t != nil {
 		nf.Time = t.AsTime()
 	}
+	nf.IsReply = f.GetIsReply().GetValue()
+	nf.Policies = append(nf.Policies, convertPolicies(f.GetIngressAllowedBy(), "ingress", "allowed")...)
+	nf.Policies = append(nf.Policies, convertPolicies(f.GetEgressAllowedBy(), "egress", "allowed")...)
+	nf.Policies = append(nf.Policies, convertPolicies(f.GetIngressDeniedBy(), "ingress", "denied")...)
+	nf.Policies = append(nf.Policies, convertPolicies(f.GetEgressDeniedBy(), "egress", "denied")...)
 	if f.GetVerdict() == flowpb.Verdict_DROPPED {
 		nf.DropReason = f.GetDropReasonDesc().String()
 	}
@@ -109,11 +114,7 @@ func convertFlow(f *flowpb.Flow) Flow {
 			nl7.Type = "http"
 			nl7.Method = rec.Http.GetMethod()
 			nl7.URL = rec.Http.GetUrl()
-			nl7.Protocol = rec.Http.GetProtocol()
 			nl7.Status = rec.Http.GetCode()
-			for _, h := range rec.Http.GetHeaders() {
-				nl7.Headers = append(nl7.Headers, Header{Key: h.GetKey(), Value: h.GetValue()})
-			}
 		case *flowpb.Layer7_Dns:
 			nl7.Type = "dns"
 			nl7.DNSQuery = rec.Dns.GetQuery()
@@ -124,6 +125,23 @@ func convertFlow(f *flowpb.Flow) Flow {
 		nf.L7 = nl7
 	}
 	return nf
+}
+
+func convertPolicies(in []*flowpb.Policy, direction, effect string) []PolicyRef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]PolicyRef, 0, len(in))
+	for _, p := range in {
+		if p == nil {
+			continue
+		}
+		out = append(out, PolicyRef{
+			Name: p.GetName(), Namespace: p.GetNamespace(), Kind: p.GetKind(),
+			Labels: p.GetLabels(), Direction: direction, Effect: effect,
+		})
+	}
+	return out
 }
 
 func convertEndpoint(e *flowpb.Endpoint) Endpoint {

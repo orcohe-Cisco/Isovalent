@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/isovalent-control/isovalent-control/backend/internal/alerts"
+	"github.com/isovalent-control/isovalent-control/backend/internal/hits"
 	"github.com/isovalent-control/isovalent-control/backend/internal/hubble"
 	"github.com/isovalent-control/isovalent-control/backend/internal/store"
 	"github.com/isovalent-control/isovalent-control/backend/internal/stream"
@@ -24,19 +24,14 @@ const (
 	bucketCount   = 90 // 15 minutes of history
 )
 
-// Alert is a security-relevant occurrence surfaced to the UI, persisted to the
-// enforcement log, and routed to external sinks.
+// Alert is a security-relevant occurrence surfaced to the UI and (later)
+// routed to external sinks.
 type Alert struct {
 	Time      time.Time `json:"time"`
 	Severity  string    `json:"severity"` // warning | critical
-	Kind      string    `json:"kind"`     // network_drop | runtime_enforcement | runtime_monitor
-	Category  string    `json:"category"` // network | runtime
-	Verdict   string    `json:"verdict"`  // blocked | killed | monitored
-	Engine    string    `json:"engine"`   // cilium | tetragon
+	Kind      string    `json:"kind"`     // network_drop | runtime_enforcement | http_error
 	Title     string    `json:"title"`
 	Detail    string    `json:"detail,omitempty"`
-	Rule      string    `json:"rule,omitempty"`  // the hook/function or drop reason that matched
-	Event     string    `json:"event,omitempty"` // compact related-event summary
 	Namespace string    `json:"namespace,omitempty"`
 	Workload  string    `json:"workload,omitempty"`
 	Policy    string    `json:"policy,omitempty"`
@@ -91,8 +86,14 @@ type Aggregator struct {
 
 	lastAlert map[string]time.Time // naive suppression
 
-	store  store.Store    // historical persistence (optional)
+	store  store.Store    // historical persistence
 	router *alerts.Router // external alert routing (optional)
+	hits   *hits.Tracker  // per-policy hit accounting for the Exclusions tab
+
+	// observed keeps the distinct namespaces/workloads/binaries/users the
+	// platform has seen, so the UI can offer exclusions from real data
+	// instead of a free-text box. Independently locked.
+	observed *ObservedCatalog
 }
 
 // NewAggregator returns an empty aggregator publishing to hub.
@@ -102,6 +103,7 @@ func NewAggregator(hub *stream.Hub) *Aggregator {
 		edges:     map[string]*edgeStat{},
 		nodes:     map[string]*nodeStat{},
 		lastAlert: map[string]time.Time{},
+		observed:  NewObservedCatalog(),
 	}
 }
 
@@ -110,6 +112,9 @@ func (a *Aggregator) SetStore(s store.Store) { a.store = s }
 
 // SetRouter attaches the external alert router.
 func (a *Aggregator) SetRouter(r *alerts.Router) { a.router = r }
+
+// SetHits attaches the per-policy hit tracker.
+func (a *Aggregator) SetHits(t *hits.Tracker) { a.hits = t }
 
 // Run consumes both channels until ctx is cancelled.
 func (a *Aggregator) Run(ctx context.Context, flows <-chan hubble.Flow, events <-chan tetragon.Event) {
@@ -201,22 +206,21 @@ func (a *Aggregator) ingestFlow(f hubble.Flow) {
 
 	var alert *Alert
 	if f.Verdict == "DROPPED" {
-		l4 := f.L4.Protocol
-		if f.L4.DstPort > 0 {
-			l4 = fmt.Sprintf("%s:%d", f.L4.Protocol, f.L4.DstPort)
-		}
 		alert = &Alert{
 			Time: f.Time, Severity: "warning", Kind: "network_drop",
-			Category: "network", Verdict: "blocked", Engine: "cilium",
-			Title:     "Blocked: " + src + " → " + dst,
-			Rule:      f.DropReason,
+			Title:     "Traffic dropped: " + src + " → " + dst,
 			Detail:    f.DropReason,
-			Event:     src + " → " + dst + " " + l4,
 			Namespace: f.Source.Namespace, Workload: f.Source.Workload,
+		}
+		// Name the rule when Cilium attributed one: "dropped" is an
+		// observation, "dropped by <policy>" is something you can act on.
+		if names := f.PolicyNames(); len(names) > 0 {
+			alert.Policy = names[0]
 		}
 	}
 	a.mu.Unlock()
 
+	a.recordObservedFlow(f)
 	a.hub.Publish("flows", f)
 	if a.store != nil {
 		_ = a.store.Save(context.Background(), store.KindFlow, f.Time, f)
@@ -246,28 +250,19 @@ func (a *Aggregator) ingestEvent(e tetragon.Event) {
 	}
 	a.mu.Unlock()
 
+	a.recordObservedEvent(e)
+	if a.hits != nil {
+		a.hits.Record(e)
+	}
 	a.hub.Publish("events", e)
 	if a.store != nil {
 		_ = a.store.Save(context.Background(), store.KindEvent, e.Time, e)
 	}
-	// A Tetragon event that matched a TracingPolicy is an enforcement-log entry:
-	// "killed" when the action was SIGKILL/OVERRIDE, otherwise "monitored".
-	if e.Policy != "" || enforced {
-		verdict, kind, sev := "monitored", "runtime_monitor", "warning"
-		if enforced {
-			verdict, kind, sev = "killed", "runtime_enforcement", "critical"
-		}
-		rule := e.Function
-		if rule == "" {
-			rule = e.Type
-		}
+	if enforced {
 		a.publishAlert(Alert{
-			Time: e.Time, Severity: sev, Kind: kind,
-			Category: "runtime", Verdict: verdict, Engine: "tetragon",
-			Title:     "Tetragon " + verdict + ": " + e.Binary,
-			Rule:      rule,
-			Detail:    strings.TrimSpace(e.Function + " " + e.Details),
-			Event:     strings.TrimSpace(e.Binary + " " + e.Args),
+			Time: e.Time, Severity: "critical", Kind: "runtime_enforcement",
+			Title:     "Tetragon " + e.Action + ": " + e.Binary,
+			Detail:    e.Function + " " + e.Details,
 			Namespace: e.Namespace, Workload: e.Workload, Policy: e.Policy,
 		})
 	}
@@ -317,6 +312,28 @@ func (a *Aggregator) WriteMetrics(w io.Writer) {
 	if a.router != nil {
 		for k, v := range a.router.Stats() {
 			metric("isovalent_control_alerts_"+k+"_total", "Alert router "+k+" count.", "counter", v)
+		}
+	}
+
+	// Per-policy hit counts. These are the series that make "which rule is
+	// noisy?" answerable in Grafana as well as in the Exclusions tab — and
+	// noise is the metric that decides whether a policy ever reaches
+	// enforcement.
+	if a.hits != nil {
+		sums := a.hits.Summaries()
+		if len(sums) > 0 {
+			fmt.Fprint(w, "# HELP isovalent_control_policy_hits_total Events attributed to a TracingPolicy.\n")
+			fmt.Fprint(w, "# TYPE isovalent_control_policy_hits_total counter\n")
+			for _, s := range sums {
+				fmt.Fprintf(w, "isovalent_control_policy_hits_total{policy=%q,namespace=%q} %d\n",
+					s.Policy, s.Namespace, s.Total)
+			}
+			fmt.Fprint(w, "# HELP isovalent_control_policy_enforced_total Enforcement actions attributed to a TracingPolicy.\n")
+			fmt.Fprint(w, "# TYPE isovalent_control_policy_enforced_total counter\n")
+			for _, s := range sums {
+				fmt.Fprintf(w, "isovalent_control_policy_enforced_total{policy=%q,namespace=%q} %d\n",
+					s.Policy, s.Namespace, s.Enforced)
+			}
 		}
 	}
 }

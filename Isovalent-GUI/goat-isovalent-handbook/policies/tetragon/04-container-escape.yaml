@@ -1,0 +1,56 @@
+# ============================================================================
+# Scenario 4 - Container escape via privileged pod + hostPath (chroot to host)
+# ----------------------------------------------------------------------------
+# The escape reads the node kubeconfig after chroot into the mounted host FS.
+# Two Tetragon angles:
+#   A) Kill any read of the node credential files (admin.conf / kubelet kubeconfig)
+#      from inside a container — the exact "game over" action in the walkthrough.
+#   B) Observe chroot/pivot_root and capsh usage as high-signal escape telemetry.
+#
+# NOTE: preventing the escape itself is best done at admission (no privileged /
+# hostPath — see Kyverno mapping in scenario doc). Tetragon is the runtime
+# backstop that catches the post-escape credential theft and can kill it.
+# ============================================================================
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: block-host-credential-theft
+spec:
+  kprobes:
+    - call: "security_file_open"
+      syscall: false
+      args:
+        - index: 0
+          type: "file"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Postfix"
+              values:
+                - "kubernetes/admin.conf"
+                - "kubelet/kubeconfig"
+                - "kubelet/config.yaml"
+          matchActions:
+            - action: Sigkill
+---
+# Observability-only policy: surface chroot into a mounted host root.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: observe-chroot-escape
+spec:
+  kprobes:
+    - call: "sys_chroot"
+      syscall: true
+      args:
+        - index: 0
+          type: "string"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Prefix"
+              values:
+                - "/host-system"
+                - "/host"
+          matchActions:
+            - action: Post

@@ -1,0 +1,654 @@
+openapi: 3.0.3
+info:
+  title: Isovalent Control API
+  version: 0.4.0
+  description: |
+    Everything the console does, it does through this API — the UI has no
+    privileged back channel. Anything you can click, you can automate.
+
+    ## Authentication
+
+    Two schemes, both presented as `Authorization: Bearer <token>`:
+
+    * **OIDC JWT** — for humans. Roles come from the `groups` claim as
+      `ic:viewer`, `ic:editor:ns1,ns2` or `ic:admin`.
+    * **API token** — for machines. Create one in Settings → API, or set
+      `IC_API_TOKENS=name:role:token`. Tokens are stored as a SHA-256 hash;
+      the plaintext is shown once at creation and cannot be retrieved.
+
+    With no `IC_OIDC_ISSUER` configured the server runs in dev mode and every
+    request is treated as an admin. Do not expose that beyond a lab.
+
+    WebSocket clients cannot set headers, so they pass `?access_token=`.
+
+    ## Conventions
+
+    * The reserved namespace segment `-` means cluster scope.
+    * Time windows accept either `window=5m|15m|1h|6h|1d|7d|30d` or explicit
+      RFC3339 `since`/`until`.
+    * Every mutating call is written to the audit log with the caller, the
+      before/after manifest and a field-level diff.
+    * Policies authored through this API can never select a protected
+      namespace (`GET /api/v1/config` lists them). This is enforced
+      server-side, so it also applies to AI-proposed changes.
+servers:
+  - url: http://localhost:8081
+    description: Local port-forward
+tags:
+  - name: Health
+  - name: Overview
+  - name: Policies
+  - name: Exclusions
+  - name: Investigation
+  - name: Alerting
+  - name: Operations
+  - name: AI
+  - name: Streams
+
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness plus the running build
+      description: |
+        The fastest way to tell whether the cluster is running the image you
+        think it is. Unauthenticated.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  mode: { type: string, example: live }
+                  version: { type: string }
+                  commit: { type: string }
+                  built: { type: string }
+                  cluster: { type: string }
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200": { description: Prometheus text exposition format }
+  /api/openapi.yaml:
+    get:
+      tags: [Health]
+      summary: This document
+      security: []
+      responses:
+        "200": { description: OpenAPI 3 document }
+
+  /api/v1/me:
+    get:
+      tags: [Overview]
+      summary: The calling identity and its roles
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Identity" }
+  /api/v1/config:
+    get:
+      tags: [Overview]
+      summary: Which features are configured
+      description: |
+        Drives the menu: the console hides pages whose backing integration is
+        not wired up rather than offering one that can only show an error.
+      responses:
+        "200": { description: OK }
+  /api/v1/namespaces:
+    get:
+      tags: [Overview]
+      summary: Cluster namespaces, with protected ones flagged
+      responses:
+        "200": { description: OK }
+  /api/v1/overview:
+    get:
+      tags: [Overview]
+      summary: Dashboard summary, recent alerts and hit totals
+      responses:
+        "200": { description: OK }
+  /api/v1/versions:
+    get:
+      tags: [Overview]
+      summary: Cilium, Hubble, Tetragon and Kubernetes versions
+      parameters:
+        - { name: refresh, in: query, schema: { type: boolean }, description: Bypass the 60s cache }
+      responses:
+        "200": { description: OK }
+  /api/v1/observed:
+    get:
+      tags: [Overview]
+      summary: Distinct values the agents have actually seen
+      parameters:
+        - { name: dim, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 200 } }
+      responses:
+        "200": { description: OK }
+  /api/v1/servicemap:
+    get:
+      tags: [Overview]
+      summary: Aggregated dependency graph
+      description: |
+        Retained for API clients. The console itself embeds the real Hubble UI
+        at `/hubble-ui/` rather than drawing its own map.
+      responses:
+        "200": { description: OK }
+  /api/v1/flows/recent:
+    get:
+      tags: [Overview]
+      summary: Most recent flows from the in-memory ring
+      parameters: [{ name: limit, in: query, schema: { type: integer, default: 100 } }]
+      responses: { "200": { description: OK } }
+  /api/v1/events/recent:
+    get:
+      tags: [Overview]
+      summary: Most recent Tetragon events
+      parameters: [{ name: limit, in: query, schema: { type: integer, default: 100 } }]
+      responses: { "200": { description: OK } }
+  /api/v1/alerts/recent:
+    get:
+      tags: [Overview]
+      summary: Most recent alerts
+      parameters: [{ name: limit, in: query, schema: { type: integer, default: 50 } }]
+      responses: { "200": { description: OK } }
+
+  /api/v1/policies/{kind}:
+    get:
+      tags: [Policies]
+      summary: List policies of a kind
+      parameters:
+        - $ref: "#/components/parameters/Kind"
+        - { name: namespace, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Policy" } }
+  /api/v1/policies/{kind}/{namespace}/{name}:
+    parameters:
+      - $ref: "#/components/parameters/Kind"
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Name"
+    get:
+      tags: [Policies]
+      summary: Read one policy
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/Policy" } } }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [Policies]
+      summary: Create or update a policy (server-side apply)
+      parameters:
+        - name: mode
+          in: query
+          schema: { type: string, enum: [live, pr] }
+          description: "`pr` opens a GitHub pull request instead of applying, when GitOps mode is configured."
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        "200": { description: Applied }
+        "403":
+          description: |
+            Rejected by self-protection — the manifest selects a protected
+            namespace. This cannot be overridden through the API.
+        "422": { description: Manifest failed validation }
+    delete:
+      tags: [Policies]
+      summary: Delete a policy
+      responses:
+        "204": { description: Deleted }
+  /api/v1/policies/dryrun:
+    post:
+      tags: [Policies]
+      summary: Simulate a network policy against recent flows
+      description: |
+        Classifies recent flows as allowed or blocked under a proposed
+        CiliumNetworkPolicy. An approximation of Cilium's engine, not a
+        reimplementation: it is meant to catch "this would break X".
+      parameters: [{ name: flows, in: query, schema: { type: integer, default: 500 } }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses: { "200": { description: OK } }
+  /api/v1/tracingpolicies:
+    get:
+      tags: [Policies]
+      summary: List TracingPolicies with their enforcement mode
+      responses: { "200": { description: OK } }
+  /api/v1/tracingpolicies/dryrun:
+    post:
+      tags: [Policies]
+      summary: Replay stored history through a proposed TracingPolicy
+      description: |
+        Answers "if I turn this on, what happens?" against real events already
+        collected. Runtime enforcement has no undo, so this is the only honest
+        way to preview a Sigkill policy.
+      parameters:
+        - $ref: "#/components/parameters/Window"
+        - { name: scan, in: query, schema: { type: integer, default: 20000 } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses: { "200": { description: OK } }
+  /api/v1/tracingpolicies/{namespace}/{name}/action:
+    post:
+      tags: [Policies]
+      summary: Switch a TracingPolicy between monitor and enforce
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+        - { name: mode, in: query, schema: { type: string, enum: [live, pr] } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action: { type: string, enum: [monitor, enforce] }
+      responses: { "200": { description: OK } }
+
+  /api/v1/hits:
+    get:
+      tags: [Exclusions]
+      summary: Per-policy hit counts
+      description: |
+        One row per TracingPolicy, including those that have fired zero times —
+        "no hits" is a finding, not an absence of data. Counts are broken down
+        by every dimension Tetragon can express an exclusion on.
+      responses: { "200": { description: OK } }
+  /api/v1/hits/{namespace}/{name}:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Name"
+    get:
+      tags: [Exclusions]
+      summary: What fired this policy, by process, path, user, label and container
+      responses: { "200": { description: OK } }
+    delete:
+      tags: [Exclusions]
+      summary: Reset the counters for this policy
+      description: |
+        Used after applying an exclusion, so the next few minutes tell you
+        whether it worked.
+      responses: { "204": { description: Reset } }
+  /api/v1/hits/{namespace}/{name}/exclusions:
+    post:
+      tags: [Exclusions]
+      summary: Write approved exclusions into the live policy
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+        - { name: dryRun, in: query, schema: { type: boolean }, description: Return the mutated manifest and diff without applying }
+        - { name: mode, in: query, schema: { type: string, enum: [live, pr] } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Exclusions" }
+      responses:
+        "200": { description: Applied, or previewed when dryRun=true }
+
+  /api/v1/investigate:
+    get:
+      tags: [Investigation]
+      summary: Unified search across stored Hubble flows and Tetragon events
+      description: |
+        Every filter is also returned as a facet with counts, which is what
+        makes the UI clickable instead of a form you fill in from memory.
+        Repeat a parameter or comma-separate it for OR; different parameters
+        are ANDed.
+      parameters:
+        - { name: source, in: query, schema: { type: string, enum: [cilium, tetragon] }, description: Omit for both }
+        - $ref: "#/components/parameters/Window"
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+        - { name: namespace, in: query, schema: { type: string } }
+        - { name: src, in: query, schema: { type: string } }
+        - { name: dst, in: query, schema: { type: string } }
+        - { name: verdict, in: query, schema: { type: string, enum: [forwarded, dropped, audit, error, observed, enforced] } }
+        - { name: policy, in: query, schema: { type: string } }
+        - { name: binary, in: query, schema: { type: string } }
+        - { name: workload, in: query, schema: { type: string } }
+        - { name: node, in: query, schema: { type: string } }
+        - { name: l7type, in: query, schema: { type: string, enum: [http, dns, kafka] } }
+        - { name: method, in: query, schema: { type: string }, description: "HTTP method, e.g. GET or POST" }
+        - { name: path, in: query, schema: { type: string }, description: Substring match on the L7 URL }
+        - { name: q, in: query, schema: { type: string }, description: Free text across every field }
+        - { name: blocked, in: query, schema: { type: boolean } }
+        - { name: replies, in: query, schema: { type: boolean }, description: Include reply traffic (default false) }
+        - { name: limit, in: query, schema: { type: integer, default: 200 } }
+      responses: { "200": { description: OK } }
+  /api/v1/investigate/explain:
+    get:
+      tags: [Investigation]
+      summary: Why was this blocked?
+      description: |
+        Loads the policy the agent attributed the verdict to and reports the
+        specific clause the event satisfied — the matchBinaries entry, the
+        matchArgs index, the ingress rule — not just the policy name.
+      parameters:
+        - { name: source, in: query, required: true, schema: { type: string, enum: [cilium, tetragon] } }
+        - { name: policy, in: query, required: true, schema: { type: string } }
+        - { name: policyNamespace, in: query, schema: { type: string } }
+        - { name: raw, in: query, required: true, schema: { type: string }, description: The record's raw JSON, as returned by /investigate }
+      responses: { "200": { description: OK } }
+  /api/v1/history/{kind}:
+    get:
+      tags: [Investigation]
+      summary: Raw stored records
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [flow, event, alert] } }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 200 } }
+      responses: { "200": { description: OK } }
+
+  /api/v1/alerts/sinks:
+    get:
+      tags: [Alerting]
+      summary: Supported integrations and what each field means
+      responses: { "200": { description: OK } }
+  /api/v1/alerts/routes:
+    get:
+      tags: [Alerting]
+      summary: Configured alert routes
+      responses: { "200": { description: OK } }
+    put:
+      tags: [Alerting]
+      summary: Replace the route table
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: array, items: { $ref: "#/components/schemas/AlertRoute" } }
+      responses: { "200": { description: OK } }
+  /api/v1/alerts/routes/test:
+    post:
+      tags: [Alerting]
+      summary: Deliver a synthetic alert to one route
+      description: Uses exactly the same delivery path as a real alert.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/AlertRoute" } } }
+      responses: { "200": { description: Delivered } }
+
+  /api/v1/audit:
+    get:
+      tags: [Operations]
+      summary: Who changed what, when
+      parameters:
+        - $ref: "#/components/parameters/Window"
+        - { name: q, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 200 } }
+      responses:
+        "200": { description: OK }
+        "403": { description: Requires the admin role }
+  /api/v1/logs:
+    get:
+      tags: [Operations]
+      summary: Recent console logs, backend and browser
+      parameters:
+        - { name: level, in: query, schema: { type: string, enum: [DEBUG, INFO, WARN, ERROR] } }
+        - { name: origin, in: query, schema: { type: string, enum: [backend, frontend, all] } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 500 } }
+      responses: { "200": { description: OK } }
+  /api/v1/logs/client:
+    post:
+      tags: [Operations]
+      summary: Ship browser log lines into the same timeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      time: { type: string, format: date-time }
+                      level: { type: string }
+                      message: { type: string }
+                      fields: { type: object, additionalProperties: { type: string } }
+      responses: { "204": { description: Accepted } }
+  /api/v1/diagnostics:
+    get:
+      tags: [Operations]
+      summary: Probe every dependency and say which leg is broken
+      description: |
+        Kubernetes API, Hubble Relay, Tetragon, Hubble UI, Grafana, the history
+        store and the AI provider. Each failing check carries a concrete next
+        step rather than only an error string.
+      responses: { "200": { description: OK } }
+  /api/v1/deployment:
+    get:
+      tags: [Operations]
+      summary: Platform-aware deployment commands
+      responses: { "200": { description: OK } }
+  /api/v1/gitops/status:
+    get:
+      tags: [Operations]
+      summary: Whether pull-request apply mode is available
+      responses: { "200": { description: OK } }
+  /api/v1/apikeys:
+    get:
+      tags: [Operations]
+      summary: List issued API tokens (never the plaintext)
+      responses: { "200": { description: OK } }
+    post:
+      tags: [Operations]
+      summary: Issue an API token
+      description: The plaintext is returned here and nowhere else, ever.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                role: { type: string, enum: [viewer, editor, admin], default: viewer }
+                ttlDays: { type: integer }
+      responses: { "201": { description: Created } }
+  /api/v1/apikeys/{id}:
+    delete:
+      tags: [Operations]
+      summary: Revoke a token
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "204": { description: Revoked } }
+
+  /api/v1/ai/status:
+    get:
+      tags: [AI]
+      summary: Whether an assistant is configured (never returns key material)
+      responses: { "200": { description: OK } }
+  /api/v1/ai/analyze:
+    post:
+      tags: [AI]
+      summary: Ask the configured model to review the current posture
+      description: |
+        Returns structured suggestions plus the exact context the model was
+        given. Nothing is applied. An agent whose inputs you cannot inspect is
+        an agent you cannot audit.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                question: { type: string }
+      responses:
+        "200": { description: OK }
+        "503": { description: No provider or key configured }
+  /api/v1/ai/apply:
+    post:
+      tags: [AI]
+      summary: Apply one approved suggestion
+      description: |
+        Deliberately does not accept a manifest from the model. The suggestion
+        names a policy and an action; the server rebuilds the change from the
+        same code path the UI buttons use, so it is subject to identical
+        validation, self-protection and audit.
+      parameters: [{ name: dryRun, in: query, schema: { type: boolean } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, policy]
+              properties:
+                kind: { type: string, enum: [enforce, monitor, exclude, disable] }
+                policy: { type: string }
+                namespace: { type: string }
+                exclusions: { $ref: "#/components/schemas/Exclusions" }
+      responses: { "200": { description: Applied } }
+
+  /ws/flows:
+    get:
+      tags: [Streams]
+      summary: Live flow stream (WebSocket)
+      parameters: [{ name: access_token, in: query, schema: { type: string } }]
+      responses: { "101": { description: Switching protocols } }
+  /ws/events:
+    get:
+      tags: [Streams]
+      summary: Live Tetragon event stream (WebSocket)
+      responses: { "101": { description: Switching protocols } }
+  /ws/alerts:
+    get:
+      tags: [Streams]
+      summary: Live alert stream (WebSocket)
+      responses: { "101": { description: Switching protocols } }
+  /ws/logs:
+    get:
+      tags: [Streams]
+      summary: Live console log stream (WebSocket)
+      responses: { "101": { description: Switching protocols } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT or API token
+  parameters:
+    Kind:
+      name: kind
+      in: path
+      required: true
+      description: "`network` and `tracing` are groups; the CRD names address one kind."
+      schema:
+        type: string
+        enum: [network, tracing, CiliumNetworkPolicy, CiliumClusterwideNetworkPolicy, NetworkPolicy, TracingPolicy, TracingPolicyNamespaced]
+    Namespace:
+      name: namespace
+      in: path
+      required: true
+      description: "The reserved value `-` means cluster scope."
+      schema: { type: string }
+    Name:
+      name: name
+      in: path
+      required: true
+      schema: { type: string }
+    Window:
+      name: window
+      in: query
+      schema: { type: string, enum: ["5m", "15m", "1h", "6h", "1d", "7d", "30d"], default: "1h" }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+  schemas:
+    Identity:
+      type: object
+      properties:
+        subject: { type: string }
+        email: { type: string }
+        name: { type: string }
+        dev: { type: boolean, description: True when authentication is disabled }
+        roles:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string, enum: [viewer, editor, admin] }
+              namespaces: { type: array, items: { type: string }, description: Globs; empty means all }
+    Policy:
+      type: object
+      properties:
+        kind: { type: string }
+        namespace: { type: string }
+        name: { type: string }
+        created: { type: string }
+        manifest: { type: object }
+    Exclusions:
+      type: object
+      description: |
+        Every field maps onto a documented Tetragon mechanism. Nothing is
+        offered that Tetragon cannot express — an exclusion that silently does
+        nothing is worse than no exclusion, because you stop looking.
+      properties:
+        binaries:
+          type: array
+          items: { type: string }
+          description: matchBinaries NotIn — filtered in the kernel, so the event is never generated.
+        parentBinaries:
+          type: array
+          items: { type: string }
+          description: matchParentBinaries NotIn — exempts everything a known-good launcher spawns.
+        paths:
+          type: array
+          items: { type: string }
+          description: matchArgs NotPrefix on the hook argument the value came from.
+        pathArgIndex:
+          type: integer
+          description: The argument index the paths apply to. A NotPrefix on the wrong index matches nothing.
+        podLabels:
+          type: array
+          items: { type: string }
+          description: podSelector matchExpressions NotIn, in "key=value" form.
+        containers:
+          type: array
+          items: { type: string }
+          description: containerSelector matchExpressions NotIn — the istio-proxy case.
+    AlertRoute:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [slack, teams, webex, webhook, syslog, splunk, elastic, sentinel, pagerduty] }
+        url: { type: string }
+        token: { type: string }
+        target: { type: string, description: Webex roomId, or syslog facility }
+        format: { type: string, enum: [rfc5424, cef], description: syslog only }
+        minSeverity: { type: string, enum: [warning, critical] }
+        kinds: { type: array, items: { type: string } }
+        namespaces: { type: array, items: { type: string } }
+        enabled: { type: boolean }

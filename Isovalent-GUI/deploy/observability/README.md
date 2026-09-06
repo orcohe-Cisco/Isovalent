@@ -1,9 +1,9 @@
 # Observability bundle (Prometheus + Grafana)
 
 Full-stack visibility for Cilium, Hubble, Tetragon, and isovalent-control's own
-golden signals. The `rebuild-aks.sh` script installs and wires all of this
-automatically (`WITH_MONITORING=true`, the default); this directory documents
-the pieces and lets you apply them to an existing cluster.
+golden signals. `./run.sh` installs and wires all of this automatically (pass
+`--no-grafana` to skip it); this directory documents the pieces and lets you
+apply them to a cluster that already has its own Prometheus.
 
 ## What gets installed
 
@@ -13,18 +13,10 @@ the pieces and lets you apply them to an existing cluster.
   - Cilium/Hubble: `hubble.metrics.enabled={dns,drop,tcp,flow,icmp,http}` plus
     Cilium + operator Prometheus endpoints and their ServiceMonitors.
   - Tetragon: `tetragon.prometheus.enabled=true` (metrics on `:2112`).
-- **One ServiceMonitor** (`isovalent-control-scrape`, created by
-  `hack/enable-metrics.sh`) that scrapes every metrics Service carrying the
-  label `isovalent-control.io/scrape: "true"` — Cilium, the Cilium operator,
-  Hubble, Tetragon, and this platform's own `/metrics`. Selecting our own label
-  rather than each chart's scheme keeps it working across chart versions.
+- **`isovalent-control` ServiceMonitor** (`servicemonitor.yaml`) scraping the
+  backend's `/metrics`.
 - **Grafana dashboard** (`dashboards/isovalent-control.json`) auto-provisioned
   via a ConfigMap labeled `grafana_dashboard: "1"` (the Grafana sidecar loads it).
-- **Official community dashboards** for Cilium, Cilium Operator, and Hubble,
-  fetched from grafana.com by ID at Grafana startup into a
-  "Cilium / Hubble / Tetragon" folder (see `monitoring-values.yaml`).
-- **Embedding enabled** (`allow_embedding`, anonymous Viewer) so the app's
-  Dashboards tab can iframe Grafana — set `IC_GRAFANA_URL` on the backend.
 
 ## Dashboard panels
 
@@ -47,54 +39,11 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3001:80
 ## Apply to an existing monitoring stack
 
 ```bash
-./hack/enable-metrics.sh
+kubectl apply -f deploy/observability/servicemonitor.yaml
 kubectl -n monitoring create configmap ic-dashboard \
   --from-file=isovalent-control.json=deploy/observability/dashboards/isovalent-control.json
 kubectl -n monitoring label configmap ic-dashboard grafana_dashboard=1
 ```
 
-## "No data" in every panel
-
-Three independent causes, all handled by `./hack/enable-metrics.sh`:
-
-1. **Cilium ships Hubble metrics off.** If Cilium was installed before this
-   platform, or by `cilium install` without the metrics flags, the
-   `cilium-agent` and `hubble-metrics` Services do not exist at all. The script
-   fixes this with `helm upgrade --reuse-values`, pinned to the chart version
-   already installed so the CNI is not upgraded underneath a running cluster.
-2. **Nothing tells Prometheus to scrape Cilium/Tetragon.** Fixed by labelling
-   whichever metrics Services exist and applying the ServiceMonitor above.
-3. **A ServiceMonitor selects Services by label, not pods.** The backend Service
-   originally carried no labels, so the scrape config matched nothing while the
-   backend served `/metrics` perfectly. The Service is labelled in the manifest
-   now.
-
-Verify without changing anything:
-
-```bash
-./hack/enable-metrics.sh --verify
-```
-
-It port-forwards Prometheus and reports the series count for each of the three
-metric families, plus any targets currently down.
-
-## Making "Isovalent Control" the default dashboard
-
-Two independent places decide what you land on:
-
-- **Grafana's home page** — `grafana.ini` sets
-  `dashboards.default_home_dashboard_path` to the sidecar-provisioned file, so
-  every user (including the anonymous viewer the embed uses) opens straight
-  onto it.
-- **The app's Dashboards tab** — the backend serves a
-  `grafanaDashboardUid` (env `IC_GRAFANA_DASHBOARD_UID`, default
-  `isovalent-control`) and the tab embeds `/d/<uid>?kiosk`, which also hides
-  Grafana's own sidebar so there aren't two nested navigations. "Show Grafana
-  nav" restores it for browsing the community dashboards inline.
-
-Point either at a different dashboard:
-
-```bash
-kubectl -n isovalent-control set env deploy/isovalent-control-backend \
-  IC_GRAFANA_DASHBOARD_UID=<uid-from-the-dashboard-url>
-```
+If Hubble/Tetragon panels show "No data", their metrics aren't enabled — the
+isovalent-control panels work regardless since they scrape our own `/metrics`.

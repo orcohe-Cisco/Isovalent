@@ -1,83 +1,77 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { apiGet } from "@/lib/api";
-import type { AppConfig } from "@/lib/types";
-import { Badge } from "@/components/StatCard";
+import { useState } from "react";
+import Link from "next/link";
+import { Embed } from "@/components/Embed";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { useConfig } from "@/lib/config";
+
+/** The dashboards worth pinning, in the order you would look at them. */
+const VIEWS = [
+  { id: "console", label: "Isovalent Control", path: (uid: string) => `/grafana/d/${uid}` },
+  { id: "cilium", label: "Cilium Agent", path: () => "/grafana/d/cilium-agent" },
+  { id: "operator", label: "Cilium Operator", path: () => "/grafana/d/cilium-operator" },
+  { id: "hubble", label: "Hubble", path: () => "/grafana/d/hubble" },
+  { id: "tetragon", label: "Tetragon", path: () => "/grafana/d/tetragon" },
+  { id: "browse", label: "Browse all", path: () => "/grafana/dashboards" },
+];
 
 export default function DashboardsPage() {
-  const [cfg, setCfg] = useState<AppConfig | null>(null);
+  const { config, loaded } = useConfig();
+  const [view, setView] = useState(VIEWS[0].id);
+  const active = VIEWS.find((v) => v.id === view) ?? VIEWS[0];
 
-  useEffect(() => {
-    apiGet<AppConfig>("/api/v1/config").then(setCfg).catch(() => setCfg({ cluster: "", mode: "" }));
-  }, []);
-
-  const [chrome, setChrome] = useState(false);
-  const grafana = cfg?.grafanaUrl;
-  const uid = cfg?.grafanaDashboardUid;
-
-  // Land straight on our dashboard rather than Grafana's home page, and hide
-  // Grafana's own navigation inside the iframe — the app already has a sidebar,
-  // and two nested navs read as a bug. "Show Grafana nav" puts it back for
-  // anyone who wants to browse the community dashboards inline.
-  const embed = grafana
-    ? uid
-      ? `${grafana}/d/${uid}?${chrome ? "" : "kiosk&"}refresh=10s`
-      : grafana
-    : undefined;
+  if (loaded && !config.features.grafana) {
+    return (
+      <>
+        <PageHeader title="Dashboards" />
+        <EmptyState
+          tone="warn"
+          title="Grafana is not configured"
+          body={
+            <p>
+              Run <code className="mono">./run.sh</code> — it installs kube-prometheus-stack and
+              loads the shipped dashboards — or point <code className="mono">IC_GRAFANA_URL</code>{" "}
+              at an existing Grafana and import{" "}
+              <code className="mono">deploy/observability/dashboards/</code>.
+            </p>
+          }
+          action={
+            <Link href="/deploy" className="btn btn-primary">
+              Deployment commands
+            </Link>
+          }
+        />
+      </>
+    );
+  }
 
   return (
-    <div className="space-y-4">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">Dashboards</h1>
-          <p className="text-sm text-neutral-400">
-            Manager-friendly Grafana visibility across Cilium, Hubble, Tetragon,
-            and isovalent-control — the golden signals, drops, enforcement, and
-            L7 protocols in one place.
-          </p>
-        </div>
-        {grafana && (
-          <div className="flex items-center gap-2">
-            {uid && (
+    <>
+      <PageHeader
+        title="Dashboards"
+        subtitle="Grafana, embedded. The console ships the panel definitions; Grafana owns the rendering and the alerting."
+        actions={
+          <div className="flex flex-wrap gap-1">
+            {VIEWS.map((v) => (
               <button
-                onClick={() => setChrome((v) => !v)}
-                className="rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs hover:bg-neutral-800"
+                key={v.id}
+                onClick={() => setView(v.id)}
+                className={`btn ${v.id === view ? "btn-secondary" : "btn-ghost"} !px-2.5 !py-1.5 !text-[12px]`}
               >
-                {chrome ? "Hide Grafana nav" : "Show Grafana nav"}
+                {v.label}
               </button>
-            )}
-            <a href={grafana} target="_blank" rel="noreferrer" className="rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs hover:bg-neutral-800">
-              Open Grafana ↗
-            </a>
+            ))}
           </div>
-        )}
-      </header>
-
-      {embed ? (
-        <div className="panel h-[calc(100vh-11rem)] overflow-hidden">
-          <iframe key={embed} src={embed} title="Grafana" className="h-full w-full border-0 bg-white" />
-        </div>
-      ) : (
-        <div className="panel space-y-3 p-6 text-sm text-neutral-300">
-          <div><Badge tone="muted">not configured</Badge></div>
-          <p className="text-neutral-400">
-            Grafana isn&apos;t wired in yet. Install the monitoring stack and point the
-            app at it:
-          </p>
-          <pre className="mono overflow-x-auto rounded bg-[color:var(--surface-0)] p-3 text-xs text-neutral-300">{`# 1. install Prometheus + Grafana + dashboards
-./install.sh --with-monitoring
-
-# 2. expose Grafana and tell the app where it is
-kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3001:80 &
-kubectl -n isovalent-control set env deploy/isovalent-control-backend \\
-  IC_GRAFANA_URL=http://localhost:3001`}</pre>
-          <p className="text-neutral-400">
-            The installer auto-provisions the <span className="mono">Isovalent Control</span> dashboard plus
-            the official community dashboards for Cilium, Hubble, and Tetragon.
-          </p>
-        </div>
-      )}
-    </div>
+        }
+      />
+      <Embed
+        key={active.id}
+        path={`${active.path(config.grafanaDashboardUid)}?kiosk&theme=dark`}
+        title="Grafana"
+        hint="Grafana answered nothing, or that dashboard UID has not been imported into it yet."
+      />
+    </>
   );
 }

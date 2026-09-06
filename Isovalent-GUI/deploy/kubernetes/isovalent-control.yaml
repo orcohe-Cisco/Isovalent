@@ -1,0 +1,229 @@
+# isovalent-control — single-file deployment, no cloud assumptions.
+#
+# Rendered by ./run.sh, which substitutes:
+#   ${IC_IMAGE_PREFIX}  registry prefix with trailing slash, or empty for a
+#                       locally-loaded image (kind / k3d / minikube)
+#   ${IMAGE_TAG}        image tag, from ./VERSION
+#   ${NAMESPACE}        target namespace
+#   ${CLUSTER_NAME}     shown in the sidebar and in every alert
+#   ${HUBBLE_RELAY}     e.g. hubble-relay.kube-system.svc.cluster.local:80
+#   ${TETRAGON_ADDR}    e.g. tetragon.kube-system.svc.cluster.local:54321
+#   ${HUBBLE_UI_URL}    e.g. http://hubble-ui.kube-system.svc.cluster.local:80
+#   ${GRAFANA_URL}      e.g. http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local:80
+#   ${IC_IMAGE_PULL_POLICY}
+#                       Always for a real registry, Never for a locally-loaded
+#                       image — see the note below.
+#
+# By hand:
+#   export IC_IMAGE_PREFIX=ghcr.io/you/ IMAGE_TAG=0.4.0 NAMESPACE=isovalent-control \
+#          CLUSTER_NAME=my-cluster HUBBLE_RELAY=hubble-relay.kube-system.svc:80 \
+#          TETRAGON_ADDR=tetragon.kube-system.svc:54321 \
+#          HUBBLE_UI_URL=http://hubble-ui.kube-system.svc:80 \
+#          GRAFANA_URL=http://kube-prometheus-stack-grafana.monitoring.svc:80 \
+#          IC_IMAGE_PULL_POLICY=Always
+#   envsubst < deploy/kubernetes/isovalent-control.yaml | kubectl apply -f -
+#
+# imagePullPolicy is templated, not hardcoded, and that matters: pushed to a
+# real registry, it must be Always — tags get reused during a demo, and
+# IfNotPresent will happily serve a cached older image with the same tag.
+# But on kind/k3d/minikube/Docker Desktop the image is loaded straight into
+# the node's local cache and was never pushed anywhere — there is no registry
+# to pull from at all. Always there doesn't "risk a stale image", it makes
+# the kubelet ignore the freshly-loaded local image and try a real registry
+# pull for a name that only exists locally, which fails outright:
+# ImagePullBackOff on every node, every time, regardless of what got loaded.
+# run.sh sets IC_IMAGE_PULL_POLICY=Never for those platforms and Always
+# everywhere else.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: isovalent-control
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: isovalent-control-backend
+  namespace: ${NAMESPACE}
+---
+# Scoped to exactly what the console manages: the policy CRDs, plus read-only
+# access to the objects it reports on. It deliberately cannot read Secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: isovalent-control-policies
+rules:
+  - apiGroups: ["cilium.io"]
+    resources:
+      - ciliumnetworkpolicies
+      - ciliumclusterwidenetworkpolicies
+      - tracingpolicies
+      - tracingpoliciesnamespaced
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Native NetworkPolicies, so the console can load and edit the rules a
+  # cluster already has rather than only the ones it wrote itself.
+  - apiGroups: ["networking.k8s.io"]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Namespace picker, and the protected-namespace check.
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list]
+  # Version discovery reads the cilium / tetragon DaemonSet image tags.
+  - apiGroups: ["apps"]
+    resources: [daemonsets, deployments]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: isovalent-control-policies
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: isovalent-control-policies
+subjects:
+  - kind: ServiceAccount
+    name: isovalent-control-backend
+    namespace: ${NAMESPACE}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: isovalent-control-backend
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: isovalent-control
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: isovalent-control
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: backend }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: isovalent-control
+        app.kubernetes.io/component: backend
+        # This label is what the console's self-protection exemption keys off:
+        # every TracingPolicy authored here gets a matching NotIn expression,
+        # so a cluster-wide enforcing policy cannot kill the console that would
+        # have let you undo it.
+        app.kubernetes.io/part-of: isovalent-control
+    spec:
+      serviceAccountName: isovalent-control-backend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532          # distroless "nonroot" — numeric so runAsNonRoot can verify
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: backend
+          image: "${IC_IMAGE_PREFIX}isovalent-control-backend:${IMAGE_TAG}"
+          imagePullPolicy: ${IC_IMAGE_PULL_POLICY}
+          ports: [{ containerPort: 8081, name: http }]
+          env:
+            - { name: IC_LISTEN_ADDR,        value: ":8081" }
+            - { name: IC_CLUSTER_NAME,       value: "${CLUSTER_NAME}" }
+            - { name: IC_CORS_ORIGIN,        value: "*" }
+            - { name: IC_HUBBLE_RELAY_ADDR,  value: "${HUBBLE_RELAY}" }
+            - { name: IC_TETRAGON_ADDR,      value: "${TETRAGON_ADDR}" }
+            - { name: IC_HUBBLE_UI_URL,      value: "${HUBBLE_UI_URL}" }
+            - { name: IC_GRAFANA_URL,        value: "${GRAFANA_URL}" }
+            - { name: IC_SELF_NAMESPACE,     value: "${NAMESPACE}" }
+            - { name: IC_PROTECTED_NAMESPACES, value: "kube-system" }
+            # AI assistant: optional. Create the Secret and uncomment.
+            #   kubectl -n ${NAMESPACE} create secret generic isovalent-control-ai \
+            #     --from-literal=api-key=sk-...
+            # - { name: IC_AI_PROVIDER, value: "anthropic" }
+            # - { name: IC_AI_MODEL,    value: "claude-sonnet-4-5" }
+            # - { name: IC_AI_API_KEY_FILE, value: "/etc/ic/ai/api-key" }
+            #
+            # Durable history + audit: optional but recommended. Without it,
+            # both live in memory and are lost on restart.
+            # - { name: IC_DB_DSN, value: "postgres://ic:ic@postgres:5432/ic?sslmode=disable" }
+            #
+            # Authentication. Leave unset only in a lab: with no issuer every
+            # caller is treated as an admin, and the backend logs a warning.
+            # - { name: IC_OIDC_ISSUER,    value: "https://issuer.example.com" }
+            # - { name: IC_OIDC_CLIENT_ID, value: "isovalent-control" }
+          # volumeMounts:
+          #   - { name: ai-key, mountPath: /etc/ic/ai, readOnly: true }
+          livenessProbe:  { httpGet: { path: /healthz, port: http } }
+          readinessProbe: { httpGet: { path: /healthz, port: http } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { memory: 512Mi }
+      # volumes:
+      #   - name: ai-key
+      #     secret: { secretName: isovalent-control-ai, items: [{ key: api-key, path: api-key }] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: isovalent-control-backend
+  namespace: ${NAMESPACE}
+  labels: { app.kubernetes.io/part-of: isovalent-control }
+spec:
+  selector: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: backend }
+  ports: [{ port: 8081, targetPort: http, name: http }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: isovalent-control-frontend
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: isovalent-control
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: isovalent-control
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: frontend }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: isovalent-control
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/part-of: isovalent-control
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000           # alpine "node" — numeric so runAsNonRoot can verify
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: frontend
+          image: "${IC_IMAGE_PREFIX}isovalent-control-frontend:${IMAGE_TAG}"
+          imagePullPolicy: ${IC_IMAGE_PULL_POLICY}
+          ports: [{ containerPort: 3000, name: http }]
+          # NEXT_PUBLIC_API_URL is baked at build time; the image defaults to
+          # http://localhost:8081, which is what the port-forward exposes.
+          # For an ingress deploy, rebuild the frontend with your public API URL.
+          env:
+            # Next.js standalone binds to $HOSTNAME (which Kubernetes sets to
+            # the pod name); force all-interfaces so port-forward reaches it.
+            - { name: HOSTNAME, value: "0.0.0.0" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: isovalent-control-frontend
+  namespace: ${NAMESPACE}
+  labels: { app.kubernetes.io/part-of: isovalent-control }
+spec:
+  selector: { app.kubernetes.io/name: isovalent-control, app.kubernetes.io/component: frontend }
+  ports: [{ port: 3000, targetPort: http, name: http }]

@@ -3,6 +3,7 @@ kind: TracingPolicy
 metadata:
   name: sensitive-capabilities
   labels:
+    app.kubernetes.io/managed-by: isovalent-control
     isovalent-control.io/category: capability
   annotations:
     isovalent-control.io/action: monitor

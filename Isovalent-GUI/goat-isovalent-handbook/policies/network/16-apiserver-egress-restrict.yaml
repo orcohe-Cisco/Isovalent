@@ -1,0 +1,37 @@
+# ============================================================================
+# Scenario 16 - RBAC least-privilege misconfig (SA token -> kube-apiserver)
+# ----------------------------------------------------------------------------
+# RBAC is the primary fix here (scope the ServiceAccount). Cilium adds network
+# defence-in-depth: workloads that have no business talking to the API server
+# are denied egress to the kube-apiserver identity, so a stolen token can't be
+# used from that pod at all.
+#
+# BLOCK: egress to the special `kube-apiserver` entity is denied for the
+# hunger-check workload (which only needed its webhook key).
+# IDENTIFY: `hubble observe --from-label app=hunger-check --to-identity
+# kube-apiserver` shows DROPPED API calls — a strong "token being abused" signal.
+# ============================================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: hunger-check-no-apiserver
+  namespace: big-monolith
+spec:
+  endpointSelector:
+    matchLabels:
+      app: hunger-check
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+  egressDeny:
+    - toEntities:
+        - kube-apiserver

@@ -1,0 +1,39 @@
+# Turns on Prometheus metrics for the pieces of Cilium that don't export them
+# by default, and tells the chart to create the matching ServiceMonitors
+# itself — this is what actually feeds the Cilium Agent / Cilium Operator /
+# Hubble tabs on the Dashboards page. Passed to `helm install`/`helm
+# upgrade cilium` via `-f`, alongside the existing Hubble --set flags in
+# run.sh (which stay as-is; this only adds what was missing).
+#
+# hubble.metrics.enabled is already turned on elsewhere in run.sh — Hubble's
+# own /metrics endpoint has been live the whole time. What was missing is
+# Prometheus actually being told to scrape it (and the agent's and
+# operator's own /metrics, which weren't even turned on). No ServiceMonitor
+# existed for any of the three, so Prometheus never saw them, and the
+# Cilium Agent / Cilium Operator / Hubble dashboards had nothing to render.
+#
+# `release: kube-prometheus-stack` on each generated ServiceMonitor matches
+# this chart's own serviceMonitorSelector convention — the same label
+# deploy/observability/servicemonitor.yaml already uses for the console's
+# own /metrics, confirmed working.
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+
+operator:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: kube-prometheus-stack
+
+hubble:
+  metrics:
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: kube-prometheus-stack

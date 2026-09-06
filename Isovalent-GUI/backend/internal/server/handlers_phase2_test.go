@@ -9,9 +9,15 @@ import (
 	"time"
 
 	"github.com/isovalent-control/isovalent-control/backend/internal/alerts"
+	"github.com/isovalent-control/isovalent-control/backend/internal/apikeys"
+	"github.com/isovalent-control/isovalent-control/backend/internal/audit"
 	"github.com/isovalent-control/isovalent-control/backend/internal/config"
+	"github.com/isovalent-control/isovalent-control/backend/internal/guard"
+	"github.com/isovalent-control/isovalent-control/backend/internal/hits"
 	"github.com/isovalent-control/isovalent-control/backend/internal/hubble"
 	"github.com/isovalent-control/isovalent-control/backend/internal/k8s"
+	"github.com/isovalent-control/isovalent-control/backend/internal/k8stest"
+	"github.com/isovalent-control/isovalent-control/backend/internal/logbuf"
 	"github.com/isovalent-control/isovalent-control/backend/internal/store"
 	"github.com/isovalent-control/isovalent-control/backend/internal/stream"
 )
@@ -22,8 +28,13 @@ func newTestServer() (http.Handler, *Aggregator) {
 	st := store.NewMemoryStore(1000)
 	agg.SetStore(st)
 	agg.SetRouter(alerts.NewRouter())
-	s := New(config.Config{Mode: config.ModeMock, ClusterName: "test"}, hub, agg,
-		k8s.NewMockStore(), nil, Deps{Router: alerts.NewRouter(), Store: st})
+	s := New(config.Config{ClusterName: "test", SelfNamespace: "isovalent-control"}, hub, agg,
+		k8stest.NewFakeStore(), nil, Deps{
+			Router: alerts.NewRouter(), Store: st,
+			Audit: audit.New(100), Logs: logbuf.New(100), Hits: hits.New(),
+			Guard: guard.New([]string{"isovalent-control", "kube-system"}),
+			Keys:  apikeys.New(),
+		})
 	return s.Router(), agg
 }
 

@@ -1,0 +1,54 @@
+# ============================================================================
+# Scenario 18 - Falco equivalents in Tetragon (eBPF runtime detection)
+# ----------------------------------------------------------------------------
+# GOAT scenario 18 uses Falco. Tetragon is Isovalent's eBPF runtime engine and
+# covers the same "classic" detections. This bundle reproduces the most common
+# Falco rules so you can show parity — plus optional in-kernel enforcement.
+#
+#   * Shell spawned inside a container -> LSM match on exec of a shell binary
+#   * Read of a sensitive file (/etc/shadow) -> kprobe on security_file_open
+#
+# The shell-exec rule uses the LSM bprm_check_security hook (needs BPF-LSM). The
+# file-open rule uses a kprobe and needs no LSM. Start in Post (observe) mode;
+# change a selector's action to Sigkill to enforce.
+# ============================================================================
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: detect-shell-in-container
+spec:
+  lsmhooks:
+    - hook: "bprm_check_security"
+      args:
+        - index: 0
+          type: "linux_binprm"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Postfix"
+              values:
+                - "/bin/sh"
+                - "/bin/bash"
+                - "/bin/dash"
+          matchActions:
+            - action: Post
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: detect-sensitive-file-read
+spec:
+  kprobes:
+    - call: "security_file_open"
+      syscall: false
+      args:
+        - index: 0
+          type: "file"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Postfix"
+              values:
+                - "/etc/shadow"
+          matchActions:
+            - action: Post

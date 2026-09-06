@@ -1,0 +1,58 @@
+# ============================================================================
+# Scenario 11 - Kubernetes namespace bypass (flat network -> Redis cache-store)
+# ----------------------------------------------------------------------------
+# THE flagship Cilium demo. GOAT's flat network lets a pod in `default` scan
+# 10.0.0.0/8 and reach the Redis cache-store in the `secure-middleware`
+# namespace. Two layers:
+#
+# BLOCK 1 - lock the target: cache-store only accepts :6379 from inside its own
+#           namespace. The cross-namespace redis-cli from the hacker pod drops.
+# BLOCK 2 - contain the source: default namespace gets default-deny egress with
+#           only DNS + intended app flows, so the zmap sweep never lands.
+#
+# IDENTIFY: `hubble observe --to-label app=cache-store --verdict DROPPED` shows
+# the blocked cross-namespace attempts; the zmap sweep lights up as a fan of
+# DROPPED SYN flows from one source in the Hubble UI.
+# ============================================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: cache-store-namespace-lock
+  namespace: secure-middleware
+spec:
+  endpointSelector:
+    matchLabels:
+      app: cache-store
+  ingress:
+    # Redis is reachable ONLY from pods in the same namespace.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: secure-middleware
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-egress-contain
+  namespace: default
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    # Intra-namespace app traffic stays allowed; cross-namespace is denied.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: default

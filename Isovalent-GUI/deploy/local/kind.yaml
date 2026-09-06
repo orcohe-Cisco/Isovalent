@@ -1,0 +1,16 @@
+# A kind cluster with the default CNI disabled, ready for Cilium.
+#
+# kube-proxy is left in place: replacing it needs a kernel configuration that
+# Docker Desktop does not always provide, and the console does not depend on
+# kube-proxy replacement for anything it shows.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: isovalent
+networking:
+  disableDefaultCNI: true
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - { containerPort: 30080, hostPort: 30080, protocol: TCP }
+  - role: worker
+  - role: worker

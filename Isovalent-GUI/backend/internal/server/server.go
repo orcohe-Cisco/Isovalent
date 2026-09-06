@@ -7,17 +7,26 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/isovalent-control/isovalent-control/backend/internal/ai"
 	"github.com/isovalent-control/isovalent-control/backend/internal/alerts"
+	"github.com/isovalent-control/isovalent-control/backend/internal/apikeys"
+	"github.com/isovalent-control/isovalent-control/backend/internal/audit"
 	"github.com/isovalent-control/isovalent-control/backend/internal/auth"
 	"github.com/isovalent-control/isovalent-control/backend/internal/config"
 	"github.com/isovalent-control/isovalent-control/backend/internal/gitops"
+	"github.com/isovalent-control/isovalent-control/backend/internal/guard"
+	"github.com/isovalent-control/isovalent-control/backend/internal/hits"
 	"github.com/isovalent-control/isovalent-control/backend/internal/k8s"
+	"github.com/isovalent-control/isovalent-control/backend/internal/logbuf"
+	"github.com/isovalent-control/isovalent-control/backend/internal/proxy"
 	"github.com/isovalent-control/isovalent-control/backend/internal/store"
 	"github.com/isovalent-control/isovalent-control/backend/internal/stream"
+	"github.com/isovalent-control/isovalent-control/backend/internal/version"
 )
 
 // Server hosts the HTTP API.
@@ -30,21 +39,62 @@ type Server struct {
 	router   *alerts.Router
 	store    store.Store
 	gitops   *gitops.Client
+	k8s      *k8s.Client // raw API client for version probes and namespaces
+	versions versionCache
+
+	audit    *audit.Log
+	logs     *logbuf.Buffer
+	hits     *hits.Tracker
+	guard    *guard.Guard
+	ai       *ai.Client
+	keys     *apikeys.Store
+	hubbleUI *proxy.Target
+	grafana  *proxy.Target
+	started  time.Time
 }
 
-// Deps bundles the optional Phase-2 components.
+// Deps bundles the components the server does not own.
 type Deps struct {
-	Router *alerts.Router
-	Store  store.Store
-	GitOps *gitops.Client
+	Router   *alerts.Router
+	Store    store.Store
+	GitOps   *gitops.Client
+	K8s      *k8s.Client
+	Audit    *audit.Log
+	Logs     *logbuf.Buffer
+	Hits     *hits.Tracker
+	Guard    *guard.Guard
+	AI       *ai.Client
+	Keys     *apikeys.Store
+	HubbleUI *proxy.Target
+	Grafana  *proxy.Target
 }
 
 // New assembles a Server.
 func New(cfg config.Config, hub *stream.Hub, agg *Aggregator, policies k8s.PolicyStore, verifier *auth.Verifier, deps Deps) *Server {
 	return &Server{
 		cfg: cfg, hub: hub, agg: agg, policies: policies, verifier: verifier,
-		router: deps.Router, store: deps.Store, gitops: deps.GitOps,
+		router: deps.Router, store: deps.Store, gitops: deps.GitOps, k8s: deps.K8s,
+		audit: deps.Audit, logs: deps.Logs, hits: deps.Hits, guard: deps.Guard,
+		ai: deps.AI, keys: deps.Keys, hubbleUI: deps.HubbleUI, grafana: deps.Grafana,
+		started: time.Now(),
 	}
+}
+
+// Resolve implements auth.TokenResolver: it maps an issued API key to an
+// identity so machine clients can call the same endpoints the UI does.
+func (s *Server) Resolve(token string) (*auth.Identity, bool) {
+	if s.keys == nil {
+		return nil, false
+	}
+	k, ok := s.keys.Lookup(token)
+	if !ok {
+		return nil, false
+	}
+	return &auth.Identity{
+		Subject: "apikey:" + k.ID,
+		Name:    k.Name,
+		Roles:   []auth.Role{{Name: auth.RoleName(k.Role)}},
+	}, true
 }
 
 // Router builds the chi mux.
@@ -54,9 +104,30 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(s.cors)
 
+	// The version is here on purpose: `curl /healthz` is the fastest way to
+	// tell whether the cluster is running the image you think it is.
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "mode": string(s.cfg.Mode)})
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status":  "ok",
+			"mode":    "live",
+			"version": version.Version,
+			"commit":  version.Commit,
+			"built":   version.Date,
+			"cluster": s.cfg.ClusterName,
+		})
 	})
+
+	// Embedded upstream consoles. These are mounted outside /api/v1 because
+	// the browser loads them in an iframe, which cannot attach a bearer
+	// token; they inherit the console's own network exposure instead.
+	if s.hubbleUI != nil {
+		r.Handle("/hubble-ui", http.RedirectHandler("/hubble-ui/", http.StatusMovedPermanently))
+		r.Handle("/hubble-ui/*", s.hubbleUI)
+	}
+	if s.grafana != nil {
+		r.Handle("/grafana", http.RedirectHandler("/grafana/", http.StatusMovedPermanently))
+		r.Handle("/grafana/*", s.grafana)
+	}
 
 	// Prometheus metrics (unauthenticated, for scraping).
 	r.Get("/metrics", func(w http.ResponseWriter, _ *http.Request) {
@@ -65,19 +136,36 @@ func (s *Server) Router() http.Handler {
 	})
 
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(s.verifier.Middleware)
+		r.Use(auth.Middleware(s.verifier, s))
 
 		r.Get("/me", func(w http.ResponseWriter, req *http.Request) {
 			writeJSON(w, http.StatusOK, auth.FromContext(req.Context()))
 		})
+		// Everything the shell needs to render itself: cluster identity, which
+		// integrations are wired up, and which menu entries are meaningful.
+		r.Get("/config", s.getUIConfig)
+		r.Get("/namespaces", s.getNamespaces)
 		r.Get("/overview", func(w http.ResponseWriter, req *http.Request) {
+			policies, events, enforced := 0, int64(0), int64(0)
+			if s.hits != nil {
+				policies, events, enforced = s.hits.Totals()
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"cluster":  s.cfg.ClusterName,
-				"mode":     s.cfg.Mode,
+				"mode":     "live",
 				"overview": s.agg.Overview(),
 				"alerts":   s.agg.RecentAlerts(25),
+				"hits": map[string]any{
+					"policies": policies, "events": events, "enforced": enforced,
+				},
 			})
 		})
+		// Component versions (Cilium / Hubble / Tetragon / Kubernetes).
+		r.Get("/versions", s.getVersions)
+
+		// Distinct values the platform has observed, for exclusion pickers.
+		r.Get("/observed", s.getObserved)
+
 		r.Get("/servicemap", func(w http.ResponseWriter, req *http.Request) {
 			nodes, edges := s.agg.ServiceMap()
 			writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
@@ -122,26 +210,57 @@ func (s *Server) Router() http.Handler {
 			writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled, "repo": s.gitopsRepo()})
 		})
 
-		// UI config — where the embedded Hubble UI + Grafana live, feature flags.
-		r.Get("/config", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"cluster":             s.cfg.ClusterName,
-				"mode":                s.cfg.Mode,
-				"hubbleUiUrl":         s.cfg.HubbleUIURL,
-				"grafanaUrl":          s.cfg.GrafanaURL,
-				"grafanaDashboardUid": s.cfg.GrafanaDashboardUID,
-				"retentionDays":       s.cfg.RetentionDays,
-				"gitops":              map[string]any{"enabled": s.gitops != nil && s.gitops.Enabled(), "repo": s.gitopsRepo()},
-			})
+		// --- Exclusions: what fired each policy, and how to stop it ---
+		r.Get("/hits", s.listHits)
+		r.Get("/hits/{namespace}/{name}", s.getHitDetail)
+		r.Post("/hits/{namespace}/{name}/exclusions", s.applyExclusions)
+		r.Delete("/hits/{namespace}/{name}", s.resetHits)
+
+		// --- Historical investigation ---
+		r.Get("/investigate", s.investigate)
+		r.Get("/investigate/explain", s.explainRecord)
+
+		// --- Runtime policy dry-run against stored history ---
+		r.Post("/tracingpolicies/dryrun", s.dryRunTracing)
+
+		// --- Alert sink catalogue (field labels per integration) ---
+		r.Get("/alerts/sinks", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, alerts.Specs())
 		})
+
+		// --- Audit log ---
+		r.Get("/audit", s.getAudit)
+
+		// --- Console logs + connectivity diagnostics ---
+		r.Get("/logs", s.getLogs)
+		r.Post("/logs/client", s.postClientLog)
+		r.Get("/diagnostics", s.getDiagnostics)
+
+		// --- AI assistant ---
+		r.Get("/ai/status", s.getAIStatus)
+		r.Post("/ai/analyze", s.postAIAnalyze)
+		r.Post("/ai/apply", s.postAIApply)
+
+		// --- API tokens ---
+		r.Get("/apikeys", s.listAPIKeys)
+		r.Post("/apikeys", s.createAPIKey)
+		r.Delete("/apikeys/{id}", s.revokeAPIKey)
+
+		// --- Deployment command catalogue ---
+		r.Get("/deployment", s.getDeployment)
 	})
+
+	// The OpenAPI document, unauthenticated so the docs page renders before
+	// you have a token.
+	r.Get("/api/openapi.yaml", s.getOpenAPI)
 
 	// WebSocket streams (token via ?access_token= for browser clients).
 	r.Route("/ws", func(r chi.Router) {
-		r.Use(s.verifier.Middleware)
+		r.Use(auth.Middleware(s.verifier, s))
 		r.Get("/flows", s.hub.ServeWS("flows"))
 		r.Get("/events", s.hub.ServeWS("events"))
 		r.Get("/alerts", s.hub.ServeWS("alerts"))
+		r.Get("/logs", s.streamLogs)
 	})
 
 	return r
@@ -262,6 +381,16 @@ func (s *Server) applyPolicy(w http.ResponseWriter, req *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
+	// Self-protection: a policy authored here may not target the console.
+	if err := s.guard.CheckManifest(body); err != nil {
+		s.record(req, "policy.apply", string(kind)+" "+ns+"/"+name, audit.OutcomeDenied, err.Error(), nil, nil)
+		writeErr(w, http.StatusForbidden, err)
+		return
+	}
+	if exempted, changed, err := guard.Exempt(body); err == nil && changed {
+		body = exempted
+	}
+	before, _ := s.policies.Get(req.Context(), kind, ns, name)
 	// GitOps PR mode: open a PR instead of applying live.
 	if req.URL.Query().Get("mode") == "pr" {
 		s.applyViaPR(w, req, kind, name, body, "apply "+string(kind)+"/"+name)
@@ -269,9 +398,15 @@ func (s *Server) applyPolicy(w http.ResponseWriter, req *http.Request) {
 	}
 	p, err := s.policies.Apply(req.Context(), kind, ns, name, body)
 	if err != nil {
+		s.record(req, "policy.apply", string(kind)+" "+ns+"/"+name, audit.OutcomeError, err.Error(), nil, nil)
 		writeErr(w, statusOf(err), err)
 		return
 	}
+	var beforeManifest json.RawMessage
+	if before != nil {
+		beforeManifest = before.Manifest
+	}
+	s.record(req, "policy.apply", string(kind)+" "+ns+"/"+name, audit.OutcomeSuccess, "", beforeManifest, p.Manifest)
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -291,10 +426,19 @@ func (s *Server) deletePolicy(w http.ResponseWriter, req *http.Request) {
 		writeErr(w, http.StatusForbidden, errors.New("not authorized to edit policies in namespace "+ns))
 		return
 	}
-	if err := s.policies.Delete(req.Context(), resolveKind(kindsList, ns), ns, chi.URLParam(req, "name")); err != nil {
+	kind := resolveKind(kindsList, ns)
+	name := chi.URLParam(req, "name")
+	before, _ := s.policies.Get(req.Context(), kind, ns, name)
+	if err := s.policies.Delete(req.Context(), kind, ns, name); err != nil {
+		s.record(req, "policy.delete", string(kind)+" "+ns+"/"+name, audit.OutcomeError, err.Error(), nil, nil)
 		writeErr(w, statusOf(err), err)
 		return
 	}
+	var beforeManifest json.RawMessage
+	if before != nil {
+		beforeManifest = before.Manifest
+	}
+	s.record(req, "policy.delete", string(kind)+" "+ns+"/"+name, audit.OutcomeSuccess, "", beforeManifest, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

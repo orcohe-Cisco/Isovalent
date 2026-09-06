@@ -1,0 +1,42 @@
+# ============================================================================
+# Scenario 20 - Secure Network Boundaries (upgrade the GOAT NSP to Cilium)
+# ----------------------------------------------------------------------------
+# GOAT teaches the vanilla NetworkPolicy `website-deny`. Below is the same intent
+# expressed as a CiliumNetworkPolicy, then upgraded to identity + L7 so you can
+# show what Cilium adds over stock NetworkPolicy: deny by default, then allow a
+# single client with a single HTTP verb.
+# ============================================================================
+# 1) Straight port of the GOAT example: deny all ingress to app=website.
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: website-deny
+  namespace: default
+spec:
+  endpointSelector:
+    matchLabels:
+      app: website
+  ingress: []
+---
+# 2) The Cilium upgrade: allow ONLY app=frontend to GET / on :80, deny the rest.
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: website-allow-frontend-l7
+  namespace: default
+spec:
+  endpointSelector:
+    matchLabels:
+      app: website
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: frontend
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+          rules:
+            http:
+              - method: "GET"
+                path: "/"

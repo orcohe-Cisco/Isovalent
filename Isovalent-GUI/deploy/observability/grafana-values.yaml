@@ -1,0 +1,32 @@
+# Values for the kube-prometheus-stack chart's embedded Grafana, tuned for
+# this console's embedded-iframe model: anonymous read-only access (no
+# second login), a root_url that matches where the browser actually reaches
+# Grafana (through this console's own backend, which reverse proxies it —
+# see backend/internal/proxy and run.sh for why that is localhost:8081, not
+# localhost:3000, and why serve_from_sub_path must be false), and the
+# sidecar that watches for the dashboard ConfigMaps this console ships.
+#
+# Passed to `helm install`/`helm upgrade` via `-f`, not `--set`, on purpose.
+# grafana.ini's own keys ARE ini section names, and one of them —
+# auth.anonymous — contains a literal dot. --set's own syntax also uses a
+# dot as its path separator, so getting that one key right means escaping
+# it correctly in every single --set flag that touches it, and it is very
+# easy to get subtly wrong in a way that fails silently: no error, no
+# warning, the section just never appears in the rendered grafana.ini and
+# Grafana quietly falls back to requiring a real login. A plain YAML
+# mapping key has no such ambiguity — "auth.anonymous" here is just a
+# string, nothing to escape, nothing to get wrong.
+grafana:
+  grafana.ini:
+    server:
+      root_url: "http://localhost:8081/grafana/"
+      serve_from_sub_path: false
+    security:
+      allow_embedding: true
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL

@@ -13,10 +13,15 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import Link from "next/link";
 import { apiGet } from "@/lib/api";
 import { useStream } from "@/lib/useStream";
 import type { Alert, OverviewResponse } from "@/lib/types";
 import { Badge, StatCard } from "@/components/StatCard";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { Chip } from "@/components/ui/Chip";
+import { usePoll } from "@/lib/usePoll";
+import type { Diagnostics } from "@/lib/types";
 
 const S1 = "#3987e5"; // flows (blue, slot 1)
 const S8 = "#e66767"; // drops/errors (red, slot 8)
@@ -37,15 +42,19 @@ const tooltipStyle = {
   fontSize: 12,
 };
 
+interface OverviewPayload extends OverviewResponse {
+  hits?: { policies: number; events: number; enforced: number };
+}
+
 export default function OverviewPage() {
-  const [data, setData] = useState<OverviewResponse | null>(null);
+  const [data, setData] = useState<OverviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { items: liveAlerts } = useStream<Alert>("/ws/alerts", 40);
 
   useEffect(() => {
     let stop = false;
     const load = () =>
-      apiGet<OverviewResponse>("/api/v1/overview")
+      apiGet<OverviewPayload>("/api/v1/overview")
         .then((d) => !stop && (setData(d), setError(null)))
         .catch((e) => !stop && setError(String(e)));
     load();
@@ -70,20 +79,20 @@ export default function OverviewPage() {
 
   return (
     <div className="space-y-6">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">Cluster Overview</h1>
-          <p className="text-sm text-neutral-400">
-            cluster <span className="mono">{data?.cluster ?? "…"}</span>
-            {data?.mode === "mock" && (
-              <span className="ml-2">
-                <Badge tone="muted">demo data</Badge>
-              </span>
-            )}
-          </p>
+      <PageHeader
+        title="Overview"
+        subtitle={`Live from cluster ${data?.cluster ?? "…"}. Everything on this page is measured, not sampled or simulated.`}
+        actions={<HealthPill />}
+      />
+
+      {error && (
+        <div className="rounded-lg px-3.5 py-2.5 text-[13px]" style={{ background: "rgba(230,103,103,0.12)", color: "#f0a3a3" }}>
+          {error}{" "}
+          <Link href="/diagnostics" className="underline">
+            Open Diagnostics
+          </Link>
         </div>
-        {error && <Badge tone="crit">API unreachable: {error}</Badge>}
-      </header>
+      )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
@@ -105,12 +114,28 @@ export default function OverviewPage() {
           accent="orange"
         />
         <StatCard
-          label="Runtime kills"
+          label="Runtime enforcement"
           value={o ? String(o.totalKills) : "—"}
           sub={`${o?.totalEvents ?? 0} Tetragon events`}
           accent="aqua"
         />
       </div>
+
+      {data?.hits && data.hits.policies > 0 && (
+        <Link href="/exclusions" className="card-interactive block px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[13px] font-medium">Policy noise</span>
+            <Chip mono>{data.hits.policies} policies firing</Chip>
+            <Chip mono>{data.hits.events.toLocaleString()} events attributed</Chip>
+            {data.hits.enforced > 0 && (
+              <Chip tone="danger" mono>{data.hits.enforced.toLocaleString()} enforcement actions</Chip>
+            )}
+            <span className="ml-auto text-[12px] text-[color:var(--text-tertiary)]">
+              Review what fired them →
+            </span>
+          </div>
+        </Link>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="panel p-4">
@@ -186,5 +211,22 @@ export default function OverviewPage() {
         </ul>
       </section>
     </div>
+  );
+}
+
+/** A single honest indicator, linking to the page that explains it. */
+function HealthPill() {
+  const { data } = usePoll<Diagnostics>("/api/v1/diagnostics", 30000);
+  if (!data) return null;
+  const tone = data.status === "ok" ? "ok" : data.status === "degraded" ? "warn" : "danger";
+  const broken = data.checks.filter((c) => c.status === "down" || c.status === "degraded");
+  return (
+    <Link href="/diagnostics" title={broken.map((c) => `${c.name}: ${c.status}`).join("\n")}>
+      <Chip tone={tone}>
+        {data.status === "ok"
+          ? "all systems reporting"
+          : `${broken.length} component${broken.length === 1 ? "" : "s"} needs attention`}
+      </Chip>
+    </Link>
   );
 }

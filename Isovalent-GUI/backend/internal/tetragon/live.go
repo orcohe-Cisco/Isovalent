@@ -98,7 +98,8 @@ func convertEvent(resp *tetragonpb.GetEventsResponse) (Event, bool) {
 		ev.Function = k.GetFunctionName()
 		ev.Action = strings.TrimPrefix(k.GetAction().String(), "KPROBE_ACTION_")
 		ev.Policy = k.GetPolicyName()
-		ev.Details = kprobeArgs(k.GetArgs())
+		ev.ArgList = kprobeArgList(k.GetArgs())
+		ev.Details = strings.Join(ev.ArgList, " ")
 	case *tetragonpb.GetEventsResponse_ProcessTracepoint:
 		t := e.ProcessTracepoint
 		ev.Type = "process_tracepoint"
@@ -115,10 +116,26 @@ func fillProcess(ev *Event, p, parent *tetragonpb.Process) {
 	if p != nil {
 		ev.Binary = p.GetBinary()
 		ev.Args = p.GetArguments()
+		// Prefer the full credential block; Process.Uid is the legacy field
+		// and is not always populated on newer agents.
+		if creds := p.GetProcessCredentials(); creds != nil && creds.GetUid() != nil {
+			uid := creds.GetUid().GetValue()
+			ev.UID = &uid
+		} else if p.GetUid() != nil {
+			uid := p.GetUid().GetValue()
+			ev.UID = &uid
+		}
+		if user := p.GetUser(); user != nil {
+			ev.User = user.GetName()
+		}
 		if pod := p.GetPod(); pod != nil {
 			ev.Namespace = pod.GetNamespace()
 			ev.Pod = pod.GetName()
 			ev.Workload = pod.GetWorkload()
+			ev.Labels = pod.GetPodLabels()
+			if c := pod.GetContainer(); c != nil {
+				ev.Container = c.GetName()
+			}
 		}
 	}
 	if parent != nil {
@@ -126,7 +143,7 @@ func fillProcess(ev *Event, p, parent *tetragonpb.Process) {
 	}
 }
 
-func kprobeArgs(args []*tetragonpb.KprobeArgument) string {
+func kprobeArgList(args []*tetragonpb.KprobeArgument) []string {
 	parts := make([]string, 0, len(args))
 	for _, a := range args {
 		switch v := a.GetArg().(type) {
@@ -144,5 +161,5 @@ func kprobeArgs(args []*tetragonpb.KprobeArgument) string {
 			parts = append(parts, fmt.Sprintf("%s:%d", v.SkbArg.GetDaddr(), v.SkbArg.GetDport()))
 		}
 	}
-	return strings.Join(parts, " ")
+	return parts
 }

@@ -5,20 +5,39 @@ backend:
     tag: "" # defaults to .Chart.AppVersion
     pullPolicy: IfNotPresent
   replicas: 1
-  # mock = demo data, live = real cluster integrations
-  mode: live
   hubbleRelayAddr: hubble-relay.kube-system.svc.cluster.local:80
   tetragonAddr: tetragon.kube-system.svc.cluster.local:54321
+  # Embedded consoles, reverse-proxied at /hubble-ui/ and /grafana/ so they can
+  # be framed from this origin without a second login.
+  hubbleUiUrl: http://hubble-ui.kube-system.svc.cluster.local:80
+  grafanaUrl: http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local:80
+  grafanaDashboardUid: isovalent-control
   clusterName: default
   corsOrigin: "*"
+  # Policies authored in the console can never select these namespaces. The
+  # release namespace is always added to the set.
+  protectedNamespaces: "kube-system"
+  # Durable history and audit log. Without it both are in-memory rings, lost
+  # on restart.
+  dbDsn: ""
   oidc:
-    # Leave issuer empty to run without authentication (dev only!).
+    # Leave issuer empty to run without authentication. Every caller is then
+    # treated as an admin, and the backend logs a warning saying so.
     issuer: ""
     clientID: ""
     rolesClaim: groups
+  ai:
+    # anthropic | gemini | openai | disabled. Any OpenAI-compatible gateway
+    # works via baseUrl.
+    provider: disabled
+    baseUrl: ""
+    model: ""
+    # Name of an existing Secret with an "api-key" entry. The key is mounted,
+    # never passed as an environment variable and never sent to the browser.
+    existingSecret: ""
   resources:
     requests: { cpu: 50m, memory: 64Mi }
-    limits: { memory: 256Mi }
+    limits: { memory: 512Mi }
 
 frontend:
   image:

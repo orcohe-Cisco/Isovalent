@@ -1,0 +1,39 @@
+# ============================================================================
+# Scenario 11 / 14 - Recon & lateral-movement tooling (hacker-container)
+# ----------------------------------------------------------------------------
+# IDENTIFY: the namespace-bypass walkthrough runs zmap, nmap and redis-cli from
+# a hacker pod. This policy matches the *executed* binary by path at the LSM
+# bprm_check_security hook and emits an event (Post) with full pod identity —
+# turning "someone is scanning the cluster" into a named alert.
+#
+# NOTE: Tetragon also emits process_exec events for EVERY exec natively, so you
+# can spot these tools in `tetra getevents` with no policy at all. This policy
+# is the targeted, alert-worthy (and optionally enforceable) version.
+#
+# PREREQUISITE: BPF-LSM enabled (CONFIG_BPF_LSM + `lsm=...,bpf` on the cmdline).
+# To ENFORCE instead of observe, swap `Post` for `Sigkill`.
+# ============================================================================
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: detect-recon-tools
+spec:
+  lsmhooks:
+    - hook: "bprm_check_security"
+      args:
+        - index: 0
+          type: "linux_binprm"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Postfix"
+              values:
+                - "/zmap"
+                - "/zgrab"
+                - "/nmap"
+                - "/masscan"
+                - "/redis-cli"
+                - "/ncat"
+          matchActions:
+            - action: Post
+            # - action: Sigkill   # uncomment to enforce (block) instead of observe

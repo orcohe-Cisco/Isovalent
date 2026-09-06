@@ -1,0 +1,20 @@
+# Scrapes isovalent-control's /metrics with Prometheus (kube-prometheus-stack).
+# Requires the Prometheus Operator CRDs (installed by kube-prometheus-stack).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: isovalent-control
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack   # matches the operator's serviceMonitorSelector
+spec:
+  namespaceSelector:
+    matchNames: [isovalent-control]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: isovalent-control
+      app.kubernetes.io/component: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

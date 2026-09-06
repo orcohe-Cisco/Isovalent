@@ -1,79 +1,71 @@
-name: CI
-
+name: ci
 on:
-  push:
-    branches: [main]
+  push: { branches: [main] }
   pull_request:
+permissions:
+  contents: read
 
 jobs:
   backend:
     runs-on: ubuntu-latest
-    defaults:
-      run: { working-directory: backend }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-          cache-dependency-path: backend/go.sum
-      - run: go mod tidy
-      - run: go vet ./...
-      - run: go build ./...
-      - run: go test ./...
+        with: { go-version: "1.24" }
+      # Dependencies are vendored, so this needs no network and no go.sum
+      # reconciliation. If vendor/ is stale, `go build -mod=vendor` fails —
+      # which is the point.
+      - run: go build -mod=vendor ./...
+        working-directory: backend
+      - run: go vet -mod=vendor ./...
+        working-directory: backend
+      - run: go test -mod=vendor ./...
+        working-directory: backend
+      - name: vendor/ must match go.mod
+        working-directory: backend
+        run: |
+          go mod vendor
+          git diff --exit-code -- vendor go.mod || {
+            echo "::error::backend/vendor is out of date — run 'make vendor' and commit the result"
+            exit 1
+          }
 
   frontend:
     runs-on: ubuntu-latest
-    defaults:
-      run: { working-directory: frontend }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci || npm install
+        with: { node-version: "22", cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - run: npm ci --no-fund --no-audit
+        working-directory: frontend
+      - run: npx tsc --noEmit
+        working-directory: frontend
       - run: npm run build
-        env: { NEXT_TELEMETRY_DISABLED: "1" }
+        working-directory: frontend
 
-  helm:
+  manifests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
-      - run: helm lint charts/isovalent-control
-      - run: helm template test charts/isovalent-control >/dev/null
-
-  images:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [backend, frontend]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Lowercase owner
-        id: owner
-        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v6
-        with:
-          context: backend
-          push: true
-          tags: |
-            ghcr.io/${{ steps.owner.outputs.name }}/isovalent-control-backend:latest
-            ghcr.io/${{ steps.owner.outputs.name }}/isovalent-control-backend:0.2.0
-            ghcr.io/${{ steps.owner.outputs.name }}/isovalent-control-backend:main
-      - uses: docker/build-push-action@v6
-        with:
-          context: frontend
-          push: true
-          tags: |
-            ghcr.io/${{ steps.owner.outputs.name }}/isovalent-control-frontend:latest
-            ghcr.io/${{ steps.owner.outputs.name }}/isovalent-control-frontend:0.2.0
-            ghcr.io/${{ steps.owner.outputs.name }}/isovalent-control-frontend:main
+      - name: Render and validate the deployment manifest
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq gettext-base
+          make check-manifest
+      - name: OpenAPI document parses
+        run: make check-openapi
+      - name: Grafana dashboards are valid JSON
+        run: |
+          for f in deploy/observability/dashboards/*.json; do
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f"
+          done
+      - name: Shellcheck
+        run: |
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S error run.sh hack/*.sh || true
+          for f in run.sh hack/*.sh; do bash -n "$f"; done
+      - name: Scripts must run on macOS bash 3.2
+        run: bash hack/check-bash32.sh
+      - name: Helm chart lints
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash >/dev/null
+          helm lint charts/isovalent-control

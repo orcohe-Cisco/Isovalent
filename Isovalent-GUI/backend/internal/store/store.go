@@ -32,13 +32,11 @@ type Store interface {
 	Close() error
 }
 
-// MemoryStore is a bounded in-memory ring per kind (default when no DB). It is
-// bounded both by count and, optionally, by age (the retention window).
+// MemoryStore is a bounded in-memory ring per kind (default when no DB).
 type MemoryStore struct {
-	mu     sync.RWMutex
-	cap    int
-	maxAge time.Duration
-	data   map[string][]Record
+	mu   sync.RWMutex
+	cap  int
+	data map[string][]Record
 }
 
 // NewMemoryStore returns a store keeping up to capPerKind records per kind.
@@ -49,14 +47,7 @@ func NewMemoryStore(capPerKind int) *MemoryStore {
 	return &MemoryStore{cap: capPerKind, data: map[string][]Record{}}
 }
 
-// SetMaxAge sets the retention window (records older than this are pruned).
-func (m *MemoryStore) SetMaxAge(d time.Duration) {
-	m.mu.Lock()
-	m.maxAge = d
-	m.mu.Unlock()
-}
-
-// Save appends a record, trimming by count and age.
+// Save appends a record, trimming to capacity.
 func (m *MemoryStore) Save(_ context.Context, kind string, t time.Time, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -65,14 +56,6 @@ func (m *MemoryStore) Save(_ context.Context, kind string, t time.Time, payload 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := append(m.data[kind], Record{Time: t, Payload: raw})
-	if m.maxAge > 0 {
-		cutoff := t.Add(-m.maxAge)
-		i := 0
-		for i < len(s) && s[i].Time.Before(cutoff) {
-			i++
-		}
-		s = s[i:]
-	}
 	if len(s) > m.cap {
 		s = s[len(s)-m.cap:]
 	}

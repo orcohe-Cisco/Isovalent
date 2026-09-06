@@ -3,6 +3,7 @@ kind: TracingPolicy
 metadata:
   name: block-crypto-mining
   labels:
+    app.kubernetes.io/managed-by: isovalent-control
     isovalent-control.io/category: egress
   annotations:
     isovalent-control.io/action: monitor

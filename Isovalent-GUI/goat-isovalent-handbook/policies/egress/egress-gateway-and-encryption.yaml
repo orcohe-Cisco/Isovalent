@@ -1,0 +1,42 @@
+# ============================================================================
+# Egress Gateway + Transparent Encryption (relevant to exfil scenarios 1,3,7,10,16)
+# ----------------------------------------------------------------------------
+# EGRESS GATEWAY: force all pod egress that leaves the cluster through a fixed,
+# known source IP (the gateway node). Combined with an upstream firewall
+# allowlist, this means an exfil/beacon attempt from a compromised pod either
+# uses the sanctioned path (and is logged) or is dropped upstream. It also makes
+# egress attributable in SIEM: one source IP == this policy.
+#
+# Requires:  helm ... --set egressGateway.enabled=true  (and bpf masquerade)
+# ============================================================================
+apiVersion: cilium.io/v2
+kind: CiliumEgressGatewayPolicy
+metadata:
+  name: goat-egress-via-gateway
+spec:
+  selectors:
+    - podSelector:
+        matchLabels:
+          io.kubernetes.pod.namespace: default
+  destinationCIDRs:
+    - "0.0.0.0/0"
+  egressGateway:
+    # Node that owns the fixed egress IP; label a node to match.
+    nodeSelector:
+      matchLabels:
+        egress-node: "true"
+    interface: eth0
+---
+# TRANSPARENT ENCRYPTION is not a CRD — it's enabled at install time so all
+# pod-to-pod traffic across nodes is encrypted (defeats on-the-wire sniffing
+# during lateral movement). Enable ONE of:
+#
+#   WireGuard:  helm upgrade cilium ... \
+#                 --set encryption.enabled=true \
+#                 --set encryption.type=wireguard
+#
+#   IPsec:      helm upgrade cilium ... \
+#                 --set encryption.enabled=true \
+#                 --set encryption.type=ipsec
+#
+# Verify:  kubectl exec -n kube-system ds/cilium -- cilium status | grep -i encryption

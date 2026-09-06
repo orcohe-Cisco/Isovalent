@@ -737,6 +737,70 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Noisiest runtime policies",
+      "description": "Events per minute attributed to each TracingPolicy. A policy at the top of this chart is an exclusion candidate, not a detection - tune it on the Exclusions tab before considering enforcement.",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(8, sum by (policy) (rate(isovalent_control_policy_hits_total[5m])) * 60)",
+          "legendFormat": "{{policy}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Enforcement actions by policy",
+      "description": "Processes killed per minute, per policy. Anything non-zero here is a policy actively terminating workloads; it should be a short and deliberate list.",
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(8, sum by (policy) (rate(isovalent_control_policy_enforced_total[5m])) * 60)",
+          "legendFormat": "{{policy}}"
+        }
+      ]
     }
   ]
 }

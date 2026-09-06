@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPost } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import type { TracingPolicyInfo } from "@/lib/types";
 import { Badge } from "@/components/StatCard";
 
@@ -78,26 +78,12 @@ export default function RulesPage() {
 
   const toggle = async (p: TracingPolicyInfo, action: "monitor" | "enforce") => {
     const ns = p.namespace || "-";
-    setError(null);
     try {
       await apiPost(`/api/v1/tracingpolicies/${ns}/${p.name}/action`, { action });
       setNote(`${p.name} → ${action === "enforce" ? "KILL" : "monitor"}`);
       setPolicies((prev) =>
         prev.map((x) => (x.name === p.name && x.namespace === p.namespace ? { ...x, action } : x)),
       );
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const remove = async (p: TracingPolicyInfo) => {
-    if (!confirm(`Remove policy "${p.name}"? It will be deleted from the cluster.`)) return;
-    const ns = p.namespace || "-";
-    setError(null);
-    try {
-      await apiDelete(`/api/v1/policies/${p.kind}/${ns}/${p.name}`);
-      setNote(`Removed ${p.name}`);
-      setPolicies((prev) => prev.filter((x) => !(x.name === p.name && x.namespace === p.namespace)));
     } catch (e) {
       setError(String(e));
     }
@@ -110,12 +96,13 @@ export default function RulesPage() {
     <div className="space-y-5">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold">Runtime Policies (Tetragon)</h1>
-          <p className="text-sm text-neutral-400">
-            Suggested best-practice TracingPolicies, organized by category.
-            Toggle each between <span className="text-series-blue">Monitor</span> (observe) and{" "}
-            <span className="text-series-red">Kill</span> (enforce), or{" "}
-            <span className="text-neutral-300">Remove</span> any you don&apos;t want — changes apply immediately.
+          <h1 className="text-lg font-semibold">Active Policies</h1>
+          <p className="max-w-3xl text-sm text-neutral-400">
+            Every TracingPolicy in the cluster and the mode it is running in. Switching a policy to{" "}
+            <span className="text-series-red">enforce</span> takes effect immediately and kills
+            matching processes — check what it has actually been matching on the{" "}
+            <a href="/exclusions" className="underline">Exclusions</a> tab first, and dry-run it
+            from <a href="/create" className="underline">Create Policy</a> if you have not.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -129,8 +116,9 @@ export default function RulesPage() {
 
       {policies.length === 0 && !error && (
         <div className="panel p-6 text-sm text-neutral-500">
-          No TracingPolicies found. Apply the defaults with{" "}
-          <code className="mono">kubectl apply -f policies/tetragon/</code>.
+          No TracingPolicies found. Pick some from the{" "}
+          <a href="/library" className="underline">Policy Library</a>, or apply the shipped set
+          with <code className="mono">kubectl apply -f policies/tetragon/</code>.
         </div>
       )}
 
@@ -148,6 +136,7 @@ export default function RulesPage() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="mono text-sm">{p.name}</span>
+                      {p.managed && <Badge tone="muted">managed</Badge>}
                       {p.namespace && <Badge tone="muted">ns:{p.namespace}</Badge>}
                     </div>
                     {p.description && (
@@ -159,16 +148,7 @@ export default function RulesPage() {
                       </div>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <ActionToggle policy={p} onChange={(a) => toggle(p, a)} />
-                    <button
-                      onClick={() => remove(p)}
-                      title="Remove this policy from the cluster"
-                      className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-400 hover:border-red-800 hover:bg-red-950/50 hover:text-red-300"
-                    >
-                      Remove
-                    </button>
-                  </div>
+                  <ActionToggle policy={p} onChange={(a) => toggle(p, a)} />
                 </li>
               ))}
             </ul>

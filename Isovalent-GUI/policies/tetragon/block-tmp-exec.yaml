@@ -3,6 +3,7 @@ kind: TracingPolicy
 metadata:
   name: block-tmp-exec
   labels:
+    app.kubernetes.io/managed-by: isovalent-control
     isovalent-control.io/category: exec
   annotations:
     isovalent-control.io/action: monitor

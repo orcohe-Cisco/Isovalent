@@ -89,3 +89,56 @@ func (p *PostgresStore) Query(ctx context.Context, kind string, since, until tim
 
 // Close closes the pool.
 func (p *PostgresStore) Close() error { return p.db.Close() }
+
+const auditSchema = `
+CREATE TABLE IF NOT EXISTS ic_audit (
+  id      BIGINT PRIMARY KEY,
+  ts      TIMESTAMPTZ NOT NULL,
+  entry   JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ic_audit_ts ON ic_audit (ts DESC);`
+
+// EnsureAuditSchema creates the audit table. Called once at startup so the
+// audit sink cannot fail on its first write.
+func (p *PostgresStore) EnsureAuditSchema(ctx context.Context) error {
+	_, err := p.db.ExecContext(ctx, auditSchema)
+	return err
+}
+
+// SaveAuditRaw persists one audit entry keyed by id. Entries are immutable, so
+// a repeat of the same id is ignored rather than overwritten.
+func (p *PostgresStore) SaveAuditRaw(ctx context.Context, id int64, t time.Time, entry []byte) error {
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO ic_audit (id, ts, entry) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
+		id, t, entry)
+	return err
+}
+
+// QueryAuditRaw returns audit entries in the window, newest first.
+func (p *PostgresStore) QueryAuditRaw(ctx context.Context, since, until time.Time, limit int) ([][]byte, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	if since.IsZero() {
+		since = time.Unix(0, 0)
+	}
+	if until.IsZero() {
+		until = time.Now().Add(time.Hour)
+	}
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT entry FROM ic_audit WHERE ts BETWEEN $1 AND $2 ORDER BY ts DESC LIMIT $3`,
+		since, until, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][]byte
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		out = append(out, raw)
+	}
+	return out, rows.Err()
+}

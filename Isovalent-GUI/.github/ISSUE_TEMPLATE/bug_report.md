@@ -10,7 +10,8 @@ labels: bug
 
 **Environment**
 - isovalent-control version / commit:
-- Mode: mock / live
+- Output of `curl localhost:8081/healthz`:
+- Relevant lines from Diagnostics (which checks were not `ok`):
 - Cilium version:
 - Tetragon version:
 - Browser:

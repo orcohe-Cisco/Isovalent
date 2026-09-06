@@ -15,10 +15,15 @@ const (
 	KindCCNP Kind = "CiliumClusterwideNetworkPolicy"
 	KindTP   Kind = "TracingPolicy"
 	KindTPN  Kind = "TracingPolicyNamespaced"
+	// KindNP is the native Kubernetes NetworkPolicy. It is included so the
+	// console can load and edit the network rules a cluster already has,
+	// rather than pretending the only policies that exist are the ones it
+	// wrote itself.
+	KindNP Kind = "NetworkPolicy"
 )
 
 // Namespaced reports whether the kind is namespace-scoped.
-func (k Kind) Namespaced() bool { return k == KindCNP || k == KindTPN }
+func (k Kind) Namespaced() bool { return k == KindCNP || k == KindTPN || k == KindNP }
 
 type gvr struct{ group, version, resource string }
 
@@ -27,7 +32,17 @@ var kinds = map[Kind]gvr{
 	KindCCNP: {"cilium.io", "v2", "ciliumclusterwidenetworkpolicies"},
 	KindTP:   {"cilium.io", "v1alpha1", "tracingpolicies"},
 	KindTPN:  {"cilium.io", "v1alpha1", "tracingpoliciesnamespaced"},
+	KindNP:   {"networking.k8s.io", "v1", "networkpolicies"},
 }
+
+// APIVersion is the apiVersion string a manifest of this kind must carry.
+func (k Kind) APIVersion() string {
+	g := kinds[k]
+	return g.group + "/" + g.version
+}
+
+// AllKinds is every kind the console manages, in menu order.
+var AllKinds = []Kind{KindCNP, KindCCNP, KindNP, KindTP, KindTPN}
 
 // ParseKind validates a kind string.
 func ParseKind(s string) (Kind, error) {
@@ -47,7 +62,7 @@ type Policy struct {
 	Manifest  json.RawMessage `json:"manifest"`
 }
 
-// PolicyStore abstracts policy CRUD so mock mode can run without a cluster.
+// PolicyStore abstracts policy CRUD.
 type PolicyStore interface {
 	List(ctx context.Context, kind Kind, namespace string) ([]Policy, error)
 	Get(ctx context.Context, kind Kind, namespace, name string) (*Policy, error)
@@ -105,39 +120,15 @@ func (s *LiveStore) Get(ctx context.Context, kind Kind, namespace, name string) 
 }
 
 func (s *LiveStore) Apply(ctx context.Context, kind Kind, namespace, name string, manifest json.RawMessage) (*Policy, error) {
-	// Server-side apply rejects read-only/managed fields — a manifest fetched
-	// via GET carries metadata.managedFields, resourceVersion, uid, etc., which
-	// trigger "metadata.managedFields must be nil". Strip them first.
-	clean, err := StripForApply(manifest)
-	if err != nil {
-		return nil, err
-	}
 	// Server-side apply: PATCH with apply-patch content type (accepts JSON,
 	// since JSON is a YAML subset). force=true takes field ownership.
 	p := path(kind, namespace, name) + "?fieldManager=isovalent-control&force=true"
-	data, err := s.client.Do(ctx, "PATCH", p, "application/apply-patch+yaml", clean)
+	data, err := s.client.Do(ctx, "PATCH", p, "application/apply-patch+yaml", manifest)
 	if err != nil {
 		return nil, err
 	}
 	pol := toPolicy(kind, data)
 	return &pol, nil
-}
-
-// StripForApply removes server-managed / read-only fields that make a
-// server-side apply fail (managedFields, resourceVersion, uid,
-// creationTimestamp, generation, selfLink) and drops any status subresource.
-func StripForApply(manifest json.RawMessage) (json.RawMessage, error) {
-	var doc map[string]any
-	if err := json.Unmarshal(manifest, &doc); err != nil {
-		return nil, fmt.Errorf("parse manifest: %w", err)
-	}
-	delete(doc, "status")
-	if meta, ok := doc["metadata"].(map[string]any); ok {
-		for _, f := range []string{"managedFields", "resourceVersion", "uid", "creationTimestamp", "generation", "selfLink", "ownerReferences"} {
-			delete(meta, f)
-		}
-	}
-	return json.Marshal(doc)
 }
 
 func (s *LiveStore) Delete(ctx context.Context, kind Kind, namespace, name string) error {
@@ -154,10 +145,6 @@ func toPolicy(kind Kind, manifest json.RawMessage) Policy {
 		} `json:"metadata"`
 	}
 	_ = json.Unmarshal(manifest, &meta)
-	// Hand the UI a clean, re-appliable manifest (no managedFields/status noise).
-	if clean, err := StripForApply(manifest); err == nil {
-		manifest = clean
-	}
 	return Policy{
 		Kind:      kind,
 		Namespace: meta.Metadata.Namespace,

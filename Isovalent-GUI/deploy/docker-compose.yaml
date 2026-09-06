@@ -1,18 +1,42 @@
-# One-command demo: backend in mock mode + frontend.
+# Run the console on your laptop against a real cluster.
+#
+#   kubectl proxy &                                                  # :8001
+#   kubectl -n kube-system port-forward svc/hubble-relay 4245:80 &
+#   kubectl -n kube-system port-forward svc/tetragon 54321:54321 &
+#   kubectl -n kube-system port-forward svc/hubble-ui 12000:80 &
 #   docker compose -f deploy/docker-compose.yaml up --build
-# UI on http://localhost:3000, API on http://localhost:8081.
+#
+# UI on http://localhost:3000, API on http://localhost:8081. Both ports matter:
+# the frontend's JavaScript runs in your browser and calls the API at
+# localhost:8081, so that port has to be published too.
+#
+# There is no offline mode. The console reads a live cluster or it reads
+# nothing, and Diagnostics will tell you which.
 services:
   backend:
-    build: ../backend
+    build:
+      context: ../backend
+      args:
+        VERSION: "0.4.0"
     environment:
-      IC_MODE: mock
       IC_LISTEN_ADDR: ":8081"
+      IC_CLUSTER_NAME: "local"
+      # host.docker.internal resolves to the host from inside the container on
+      # Docker Desktop; on Linux, run with --network host instead.
+      IC_K8S_API_SERVER: "http://host.docker.internal:8001"
+      IC_HUBBLE_RELAY_ADDR: "host.docker.internal:4245"
+      IC_TETRAGON_ADDR: "host.docker.internal:54321"
+      IC_HUBBLE_UI_URL: "http://host.docker.internal:12000"
+      IC_GRAFANA_URL: "http://host.docker.internal:3001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8081:8081"
   frontend:
-    build: ../frontend
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8081
+    build:
+      context: ../frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8081
     ports:
       - "3000:3000"
     depends_on:

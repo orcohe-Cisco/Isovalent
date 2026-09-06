@@ -1,0 +1,57 @@
+# ============================================================================
+# Scenario 3 - SSRF to cloud metadata (169.254.169.254) and internal services
+# ----------------------------------------------------------------------------
+# BLOCK: The SSRF lets the app fetch the cloud instance-metadata endpoint
+# (169.254.169.254) and pivot to the internal metadata-db service. This egress
+# policy allows DNS + the app's legitimate destinations, and because Cilium is
+# default-deny once ANY egress rule exists on the endpoint, the link-local
+# metadata IP and every un-listed service are dropped.
+#
+# For an explicit "deny the metadata IP even if someone loosens egress later",
+# use the CiliumClusterwideNetworkPolicy deny block at the bottom.
+#
+# IDENTIFY: `hubble observe --from-pod default/build-code --to-ip 169.254.169.254`
+# shows DROPPED verdicts; the Hubble UI flags the link-local flow immediately.
+# ============================================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: build-code-egress-lockdown
+  namespace: default
+spec:
+  endpointSelector:
+    matchLabels:
+      app: build-code
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    # Only the intended in-cluster dependency, nothing else.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: default
+            app: kubernetes-goat-home
+---
+# Cluster-wide hard deny of the cloud metadata service. Deny rules always win,
+# so this protects every pod regardless of any allow policy elsewhere.
+apiVersion: "cilium.io/v2"
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: deny-cloud-metadata
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: k8s:io.kubernetes.pod.namespace
+        operator: NotIn
+        values: ["kube-system"]
+  egressDeny:
+    - toCIDR:
+        - 169.254.169.254/32

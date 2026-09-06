@@ -1,0 +1,38 @@
+# ============================================================================
+# Scenario 10 - Crypto miner container (batch-check job beacons out)
+# ----------------------------------------------------------------------------
+# BLOCK: The miner image phones home / pulls its payload over the network. A
+# default-deny egress with a tight FQDN allowlist starves it: DNS lookups for
+# mining pools and the payload host resolve but have no matching toFQDNs allow,
+# so the connections drop. (Tetragon kills the process — see
+# policies/tetragon/10-cryptominer-exec.yaml — this stops the network half.)
+#
+# IDENTIFY: the miner's repeated failed lookups/connections appear as DROPPED
+# egress in `hubble observe --from-label job-name=batch-check-job` and as a
+# steady beacon pattern in the Hubble UI. With Isovalent Enterprise Timescape
+# you can query the beacon history days after the job has been deleted.
+# ============================================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: batch-check-egress-lock
+  namespace: default
+spec:
+  endpointSelector:
+    matchLabels:
+      job-name: batch-check-job
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    # A batch job that legitimately needs NOTHING external gets no toFQDNs at
+    # all -> every outbound connection except DNS is denied. Add explicit
+    # matchName entries here only for real dependencies.

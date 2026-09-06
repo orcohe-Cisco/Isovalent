@@ -1,0 +1,39 @@
+# ============================================================================
+# BASELINE: default-deny for a namespace (zero-trust starting point)
+# ----------------------------------------------------------------------------
+# Kubernetes networking is flat: every pod can reach every other pod by default
+# (this is the root cause behind GOAT scenarios 3, 7, 8, 10, 11, 16). The first
+# move for ANY Cilium demo is to switch a namespace to default-deny, then add
+# back only the flows you can see in Hubble.
+#
+# Apply this to an app namespace (NOT kube-system) once you know its real flows.
+# Pair it with policies/dns-l7/dns-allowlist-egress.yaml so DNS still resolves.
+# ============================================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+  namespace: default
+spec:
+  # Empty endpointSelector = selects every pod in the namespace.
+  endpointSelector: {}
+  # Empty ingress/egress arrays with the selector present = deny all.
+  ingress: []
+  egress: []
+---
+# Cluster-wide variant: default-deny everywhere EXCEPT kube-system / cilium.
+# Use CiliumClusterwideNetworkPolicy for guardrails that must not be namespaced.
+apiVersion: "cilium.io/v2"
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: clusterwide-default-deny
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: k8s:io.kubernetes.pod.namespace
+        operator: NotIn
+        values:
+          - kube-system
+          - kube-node-lease
+  ingress: []
+  egress: []
