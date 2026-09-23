@@ -3,8 +3,9 @@
 ## Run it
 
 ```bash
-git clone https://github.com/orcohe-Cisco/Isovalent/tree/main/Isovalent-GUI
-cd isovalent-control
+git clone https://github.com/orcohe-Cisco/Isovalent/
+cd Isovalent-control
+cd Isovalent-GUI 
 ./run.sh
 ```
 
